@@ -1,0 +1,3 @@
+[submodule "Cus_Flash_dir"]
+	path = Cus_Flash_dir
+	url = https://github.com/R6bandito/stm32_Cus_Flashdriver
