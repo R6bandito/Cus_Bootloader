@@ -31,6 +31,8 @@ void Cus_Bootloader_Init( void )
     Cus_Bootloader_Utils_DebugUART();
   #endif // USE_UTILS_DEBUG
 
+  Cus_Bootloader_FeedIWDG();
+
   Cus_Flash_CalibrateLatency();
 }
 
@@ -68,6 +70,8 @@ static uint8_t Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC )
 
   uint32_t CalculateCRC = Cus_Bootloader_CRC32Caculate((uint8_t *)DOWNLOAD_START_ADDRESS, iap_info->app_size);
 
+  Cus_Bootloader_FeedIWDG();
+
   if ( CalculateCRC != exptected_CRC )  return 0;   // CRC Verify Failed!
 
   return 1;   
@@ -89,6 +93,17 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 
 
 
+void Cus_Bootloader_FeedIWDG( void )
+{
+  #if (USE_IWDG)
+    uint16_t Reload = 0xAAAAUL;
+
+    IWDG->KR = (Reload & 0xFFFFUL);
+  #endif
+  __nop();
+}
+
+
 /* ****************************** Hook Default ******************************************* */
 
 __weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_t error )
@@ -97,9 +112,12 @@ __weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_
   UNUSED(error);
 
   #if (USE_UTILS_DEBUG)
-    printf("Cus_BootloaderHook_FailedToErase Trigged!\n");
+    printf("Cus_BootloaderHook_FailedToErase Trigged!\n\n");
+    printf("[BOOT] Erase Failed! Addr:0x%08X, Err:%d. System will reset in 3s...\n", page_addr, error);
   #endif
-  for( ; ; );
+
+  HAL_Delay(3000);
+  NVIC_SystemReset();
 }
 
 
@@ -109,9 +127,12 @@ __weak void Cus_BootloaderHook_WriteFailed( uint32_t target_addr, Cus_Flash_Stat
   UNUSED(error);
 
   #if (USE_UTILS_DEBUG)
-    printf("Cus_BootloaderHook_WriteFWFailed Trigged!\n");
+    printf("Cus_BootloaderHook_WriteFWFailed Trigged!\n\n");
+    printf("[BOOT] Write Failed! Addr:0x%08X, Err:%d. System will reset in 3s...\n", target_addr, error);
   #endif  
-  for( ; ; );
+
+  HAL_Delay(3000);
+  NVIC_SystemReset();
 }
 
 
@@ -121,9 +142,12 @@ __weak void Cus_BootloaderHook_VerifyFailed( uint32_t region_start, uint32_t siz
   UNUSED(size);
 
   #if (USE_UTILS_DEBUG)
-    printf("Cus_BootloaderHook_VerifyFailed Trigged!\n");
+    printf("Cus_BootloaderHook_VerifyFailed Trigged!\n\n");
+    printf("[BOOT] Verify Failed! Region:0x%08X, Size:%u. System will reset in 3s...\n", region_start, size);
   #endif  
-  for( ; ; );
+
+  HAL_Delay(3000);
+  NVIC_SystemReset();
 }
 
 
@@ -133,9 +157,12 @@ __weak void Cus_BootloaderHook_GenericError( BL_State_t state, uint32_t error_co
   UNUSED(error_code);
 
   #if (USE_UTILS_DEBUG)
-    printf("Cus_BootloaderHook_GenericError Trigged!\n");
+    printf("Cus_BootloaderHook_GenericError Trigged!\n\n");
+    printf("[BOOT] Generic Error! State:%d, Code:0x%02X. System will reset in 3s...\n", state, error_code);
   #endif  
-  for( ; ; );  
+
+  HAL_Delay(3000);
+  NVIC_SystemReset();
 }
 
 /* ***************************************************************************************** */

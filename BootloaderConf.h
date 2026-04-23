@@ -64,9 +64,24 @@
   #define IAP_INFO_STRUCT_START_ADDR        (0x0807F800UL)
   #define IAP_INFO_STRUCT_REGION_SIZE       (0x00000800UL)    // 2KB
 
+  #define MCU_SRAM_BASE_ADDR                (SRAM_BASE) 
+  #define MCU_SRAM_SIZE                     (64 * 1024)
+
   #define IAP_MAGIC_WORD                    (0xAA55UL)  
   #define SIZE_PER_PAGE_KB                  (2)              // 2KB Per Page.
+
+
+  #define USE_IWDG                          (1)
 /* ------------------------------------------ */
 
+
+
+/* -------------- Core Define ------------------- */
+  #define IAP_ERRCODE_INVALID_STACKTOPADDR  (0x01UL)
+  #define IAP_ERRCODE_INVALID_RESETHANDLER  (0x01UL << 1)
+
+
+
+/* ------------------------------------------ */
 
 #endif 

@@ -32,9 +32,23 @@ typedef struct Bootloader_info
 } IAP_Info_t;
 
 
+/* 用于 断电续传 结构. (预留接口 待实现) */
+typedef struct Bootloader_record
+{
+  uint16_t record_magic;                // 数据有效性验证魔数.
+  BL_State_t record_state;              // 保存的升级阶段.
+  uint16_t record_pages;                // 当前已成功写入的页索引（0-based）.
+  uint16_t record_halfWord_offset;      // 页内半字偏移.
+
+} Bootloader_record_t;
+
+
+
 /* ---------------------------------------------------------- */
 uint8_t Cus_Bootloader_CheckIAPRequest( void );
 void Cus_Bootloader_Init( void );
+void Cus_Bootloader_FeedIWDG( void );
+
 
 // 擦除失败时的 Hook（page_addr：失败的页地址，error：错误码）
 __weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_t error );

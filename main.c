@@ -38,6 +38,8 @@ int main( void )
 	while(1)
 	{
 STATE_CHECK:
+		Cus_Bootloader_FeedIWDG();
+
 		switch (g_bootloaderState)
 		{
 			case BL_STATE_ERASE_APP:
@@ -65,8 +67,10 @@ STATE_CHECK:
 
 				pPage->PageAddress = current_appAddr;
 				memcpy(pPage->PageDataBuffer, (uint8_t *)current_downloadAddr, (SIZE_PER_PAGE_KB * 1024));
+				Cus_Bootloader_FeedIWDG();
 
 				Cus_Flash_State_t hReturn = Cus_Flash_WritePage(pPage);
+				Cus_Bootloader_FeedIWDG();
 				if ( hReturn != CUS_FLASH_OK )
 				{
 					Cus_BootloaderHook_WriteFailed(pPage->PageAddress, hReturn);
@@ -91,11 +95,13 @@ STATE_CHECK:
 					if ( remaining != 0 && remaining < (SIZE_PER_PAGE_KB * 1024) )
 					{
 						// 剩余数据不足一页.
+						Cus_Bootloader_FeedIWDG();
 						memset(pPage->PageDataBuffer, 0, (SIZE_PER_PAGE_KB * 1024));
 						memcpy(pPage->PageDataBuffer, (uint8_t *)current_downloadAddr, remaining);
 						pPage->PageAddress = current_appAddr;
 
 						Cus_Flash_State_t hReturn = Cus_Flash_WritePage(pPage);
+						Cus_Bootloader_FeedIWDG();
 						if ( hReturn != CUS_FLASH_OK )
 						{
 							Cus_BootloaderHook_WriteFailed(pPage->PageAddress, hReturn);
@@ -113,6 +119,7 @@ STATE_CHECK:
 		case BL_STATE_VERIFY_FW:
 			{
 				bool is_FW_VerifyOK = Cus_Flash_VerifyBuffer(APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize);
+				Cus_Bootloader_FeedIWDG();
 				if ( !is_FW_VerifyOK )
 				{
 					// Frameware Verify Failed. Start Retry.
@@ -136,11 +143,13 @@ STATE_CHECK:
 
 		case BL_STATE_CLEAR_IAP_FLAG:
 			{
+				Cus_Bootloader_FeedIWDG();
 				IAP_Info_t iap_info;
 				memcpy(&iap_info, (IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR, sizeof(iap_info));
 				iap_info.magic_word = 0x0000;			// 清除魔数标志.
 
 				Cus_Flash_State_t eReturn = Cus_Flash_ErasePage(IAP_INFO_STRUCT_START_ADDR);
+				Cus_Bootloader_FeedIWDG();
 				if ( eReturn != CUS_FLASH_OK )
 				{
 					Cus_BootloaderHook_EraseFailed(IAP_INFO_STRUCT_START_ADDR, eReturn);
@@ -148,6 +157,7 @@ STATE_CHECK:
 				}
 
 				Cus_Flash_State_t hReturn = Cus_Flash_WriteBuffer(IAP_INFO_STRUCT_START_ADDR, (uint8_t *)&iap_info, sizeof(iap_info));
+				Cus_Bootloader_FeedIWDG();
 				if ( hReturn != CUS_FLASH_OK )
 				{
 					Cus_BootloaderHook_WriteFailed(IAP_INFO_STRUCT_START_ADDR, hReturn);
@@ -161,12 +171,30 @@ STATE_CHECK:
 		case BL_STATE_JUMP_APP:
 			{
 				// Jump to APP.
+				Cus_Bootloader_FeedIWDG();
+
+				uint32_t msp = *(volatile uint32_t *)APP_START_ADDRESS;		// 读取栈顶地址.
+				if ( msp < MCU_SRAM_BASE_ADDR || msp > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE) )
+				{
+					// 栈顶地址非法.
+					Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_STACKTOPADDR);
+					for( ; ; );
+				}
+
+				uint32_t reset_vector = *(volatile uint32_t *)(APP_START_ADDRESS + 4);
+				if ( reset_vector < APP_START_ADDRESS || reset_vector > (APP_START_ADDRESS + APP_REGION_SIZE) )
+				{
+					// 复位向量地址非法.
+					Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_RESETHANDLER);
+					for( ; ; );
+				}
+
 				__disable_irq();
 				HAL_DeInit();
 				SCB->VTOR = APP_START_ADDRESS;		// 设置中断向量表.
-				uint32_t msp = *(volatile uint32_t *)APP_START_ADDRESS;		// 读取栈顶地址.
+				__DSB();
 				__set_MSP(msp);							// 设置主堆栈.
-				uint32_t reset_vector = *(volatile uint32_t *)(APP_START_ADDRESS + 4);
+
 				void (*app_entry)(void) = (void (*)(void))reset_vector;
 				app_entry();
 
