@@ -1,7 +1,7 @@
 #include "Bootloader.h"
 
 /* ------------------- g_ver --------------------- */
-BL_State_t g_bootloaderState;
+volatile BL_State_t g_bootloaderState;
 /* ---------------------------------------------- */
 
 /* ---------------------------------------------- */
@@ -51,7 +51,8 @@ uint8_t Cus_Bootloader_CheckIAPRequest( void )
   if ( !CRC_CheckReturn )   
   {
     // CRC Verify Failed! Fireware not reliable.Discard this update required.
-    Cus_Flash_State_t hReturn = Cus_Flash_ErasePage(IAP_INFO_STRUCT_START_ADDR);
+    uint32_t IAP_Addr_Page = Cus_Flash_GetPageStart(IAP_INFO_STRUCT_START_ADDR);
+    Cus_Flash_State_t hReturn = Cus_Flash_ErasePage(IAP_Addr_Page);
     if ( hReturn != CUS_FLASH_OK )
     {
       Cus_BootloaderHook_EraseFailed( IAP_INFO_STRUCT_START_ADDR, hReturn );
@@ -86,6 +87,11 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
   for( uint32_t i = 0; i < data_len; i++ )
   {
     crc = (crc >> 8) ^ table[(crc ^ pData[i]) & 0xFF];
+
+    if ( i % 1024 == 0 )
+    {
+      Cus_Bootloader_FeedIWDG();    // 每1024字节喂狗一次.
+    }
   }
 
   return crc ^ 0xFFFFFFFF; 

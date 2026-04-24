@@ -1,8 +1,10 @@
 #include "main.h"
 
-extern BL_State_t g_bootloaderState;
+extern volatile BL_State_t g_bootloaderState;
 
 Cus_Flash_Page_t *pPage;
+
+static bool is_Retry = false;
 
 
 
@@ -63,6 +65,13 @@ STATE_CHECK:
 				static uint32_t current_downloadAddr = DOWNLOAD_START_ADDRESS;
 				static uint32_t current_appAddr = APP_START_ADDRESS;
 
+				if ( is_Retry )
+				{
+					current_pages = 0;
+					current_downloadAddr = DOWNLOAD_START_ADDRESS;
+					current_appAddr = APP_START_ADDRESS;
+				}
+
 				pPage->Reset(pPage);
 
 				pPage->PageAddress = current_appAddr;
@@ -118,25 +127,28 @@ STATE_CHECK:
 
 		case BL_STATE_VERIFY_FW:
 			{
+				static uint8_t retry_count = 0;
 				bool is_FW_VerifyOK = Cus_Flash_VerifyBuffer(APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize);
 				Cus_Bootloader_FeedIWDG();
 				if ( !is_FW_VerifyOK )
 				{
 					// Frameware Verify Failed. Start Retry.
-					static uint8_t retry_count = 0;
 					retry_count++;
 					if ( retry_count <= 3 )
 					{
+						is_Retry = true;
 						g_bootloaderState = BL_STATE_ERASE_APP;		// Back to BL_STATE_ERASE_APP.
 						break;
 					}
 					else 
 					{
 						Cus_BootloaderHook_VerifyFailed(APP_START_ADDRESS, writeSize);
-						for( ; ; );
 					}
+					for( ; ; );
 				}
 				
+				is_Retry = false;
+				retry_count = 0;
 				g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
 				break;
 			}
@@ -144,23 +156,13 @@ STATE_CHECK:
 		case BL_STATE_CLEAR_IAP_FLAG:
 			{
 				Cus_Bootloader_FeedIWDG();
-				IAP_Info_t iap_info;
-				memcpy(&iap_info, (IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR, sizeof(iap_info));
-				iap_info.magic_word = 0x0000;			// 清除魔数标志.
-
-				Cus_Flash_State_t eReturn = Cus_Flash_ErasePage(IAP_INFO_STRUCT_START_ADDR);
+				uint32_t IAP_Info_Page = Cus_Flash_GetPageStart(IAP_INFO_STRUCT_START_ADDR);
+				
+				Cus_Flash_State_t eReturn = Cus_Flash_ErasePage(IAP_Info_Page);
 				Cus_Bootloader_FeedIWDG();
 				if ( eReturn != CUS_FLASH_OK )
 				{
 					Cus_BootloaderHook_EraseFailed(IAP_INFO_STRUCT_START_ADDR, eReturn);
-					for( ; ; );
-				}
-
-				Cus_Flash_State_t hReturn = Cus_Flash_WriteBuffer(IAP_INFO_STRUCT_START_ADDR, (uint8_t *)&iap_info, sizeof(iap_info));
-				Cus_Bootloader_FeedIWDG();
-				if ( hReturn != CUS_FLASH_OK )
-				{
-					Cus_BootloaderHook_WriteFailed(IAP_INFO_STRUCT_START_ADDR, hReturn);
 					for( ; ; );
 				}
 

@@ -71,7 +71,7 @@
   #define SIZE_PER_PAGE_KB                  (2)              // 2KB Per Page.
 
 
-  #define USE_IWDG                          (1)
+  #define USE_IWDG                          (1)         // 接管IWDG喂狗操作. 0=未开启IWDG，耗时操作不处理喂狗. 1=开启IWDG，耗时操作自动处理喂狗. 
 /* ------------------------------------------ */
 
 
