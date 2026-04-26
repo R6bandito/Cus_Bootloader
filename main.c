@@ -191,6 +191,12 @@ STATE_CHECK:
 					for( ; ; );
 				}
 
+				SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.
+				SysTick->LOAD = 0;
+				SysTick->VAL  = 0;
+				
+				SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;		// 清除可能已经挂起的 SysTick 中断请求.
+
 				__disable_irq();
 				HAL_DeInit();
 				SCB->VTOR = APP_START_ADDRESS;		// 设置中断向量表.
