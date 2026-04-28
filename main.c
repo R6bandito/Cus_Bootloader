@@ -1,11 +1,15 @@
 #include "main.h"
 
+
+/* ---------------------------------------------- */
 extern volatile BL_State_t g_bootloaderState;
-
 Cus_Flash_Page_t *pPage;
-
 static bool is_Retry = false;
 
+#if (USE_POWER_FAIL_RESUME)
+  extern Bootloader_record_t recordStructure;
+#endif // USE_POWER_FAIL_RESUME
+/* ---------------------------------------------- */
 
 
 int main( void )
@@ -17,6 +21,36 @@ int main( void )
 	printf(" ============== Bootloader Running ================= \n");
 
 	g_bootloaderState = BL_STATE_START;
+
+	#if (USE_RECOVERY_APP)
+		uint32_t bootCount = Cus_Bootloader_GetBootCount();
+		if ( bootCount >= MAX_FAILED_COUNT )
+		{
+			// 连续重启超过阈值，APP 反复崩溃，且DOWNLOAD区可能已损坏.放弃主流程，直接进恢复区.
+			Cus_Bootloader_ClearBootCount();
+			Cus_Bootloader_JumpToRecoveryAPP();
+			for( ; ; );			// 兜底. 程序不应该执行到这里.
+		}
+
+		Cus_Bootloader_IncreaseBootCount();		// 本次启动计数 + 1.(请在APP成功跳转后进行清除)
+	#endif // USE_RECOVERY_APP
+
+	#if (USE_POWER_FAIL_RESUME)
+		Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField();		// 获取BKP内存储的烧写信息.
+		if ( !recordStructure.error_flag )
+		{
+			// 无错误状态. 状态更新 + 跳转.
+			g_bootloaderState = recordStructure.record_state;
+			goto STATE_CHECK;
+		}
+		#if (PWRFAIL_CONF_IGNORE_ERROR)
+			g_bootloaderState = recordStructure.record_state;		// 无视错误状态. 依然走断电续写流程.
+			goto STATE_CHECK;
+		#endif // PWRFAIL_CONF_IGNORE_ERROR
+
+		// 有错误状态. 且配置为不忽略错误. 重走升级流程,清除BKP相关区域.
+		Cus_Bootloader_PowerFailResume_ResetBKPField();
+	#endif // USE_POWER_FAIL_RESUME
 
 	uint8_t hReturn = Cus_Bootloader_CheckIAPRequest();
 	if ( !hReturn )		
@@ -142,6 +176,7 @@ STATE_CHECK:
 					}
 					else 
 					{
+						// 重试 3 次全部失败，触发 VerifyFailed Hook（默认软复位）.
 						Cus_BootloaderHook_VerifyFailed(APP_START_ADDRESS, writeSize);
 					}
 					for( ; ; );
@@ -179,7 +214,13 @@ STATE_CHECK:
 				if ( msp < MCU_SRAM_BASE_ADDR || msp > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE) )
 				{
 					// 栈顶地址非法.
-					Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_STACKTOPADDR);
+					#if (USE_RECOVERY_APP)
+						Cus_Bootloader_JumpToRecoveryAPP();	// 栈顶非法. 由于擦写和校验已成功，此处却栈顶出现问题. 极大可能DOWNLOAD区与APP区已经损毁. 开启USE_RECOVERY_APP功能的情况下直接跳转.
+					#else 
+						// 不启用恢复区，走通用错误 Hook（默认软复位）.
+						Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_STACKTOPADDR);
+					#endif // USE_RECOVERY_APP
+
 					for( ; ; );
 				}
 
@@ -187,7 +228,12 @@ STATE_CHECK:
 				if ( reset_vector < APP_START_ADDRESS || reset_vector > (APP_START_ADDRESS + APP_REGION_SIZE) )
 				{
 					// 复位向量地址非法.
-					Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_RESETHANDLER);
+					#if (USE_RECOVERY_APP)
+						Cus_Bootloader_JumpToRecoveryAPP();
+					#else 
+						Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_RESETHANDLER);
+					#endif // USE_RECOVERY_APP
+
 					for( ; ; );
 				}
 
