@@ -10,7 +10,7 @@
   #define USE_UTILS_DEBUG         (1)
   #define USE_UTILS_SYSCONF       (1)
   #define USE_RECOVERY_APP        (0)
-  #define USE_POWER_FAIL_RESUME   (1)         // 是否启用断电续传. 0=不启用,升级过程中断电后下次启动重新进行擦写流程. 1=启用,升级过程断电后，下次启动继续烧写.
+  #define USE_POWER_FAIL_RESUME   (0)         // 是否启用断电续传. 0=不启用,升级过程中断电后下次启动重新进行擦写流程. 1=启用,升级过程断电后，下次启动继续烧写.
   #define USE_IWDG                (1)         // 接管IWDG喂狗操作. 0=未开启IWDG，耗时操作不处理喂狗. 1=开启IWDG，耗时操作自动处理喂狗. 
 /* ------------------------------------------ */
 
@@ -26,7 +26,7 @@
 
 /* -------------- POWER_FAIL_RESUME Config ------------------- */
 #if (USE_POWER_FAIL_RESUME)
-  #define PWRFAIL_CONF_IGNORE_ERROR   (1)
+  #define PWRFAIL_CONF_IGNORE_ERROR   (0)
 #endif 
 /* ----------------------------------------------------------- */
 

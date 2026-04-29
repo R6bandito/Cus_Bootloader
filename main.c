@@ -36,20 +36,21 @@ int main( void )
 	#endif // USE_RECOVERY_APP
 
 	#if (USE_POWER_FAIL_RESUME)
-		Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField();		// 获取BKP内存储的烧写信息.
-		if ( !recordStructure.error_flag )
+		uint8_t hReturn = Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField();		// 获取BKP内存储的烧写信息.
+		if ( !recordStructure.error_flag && hReturn )
 		{
 			// 无错误状态. 状态更新 + 跳转.
 			g_bootloaderState = recordStructure.record_state;
-			goto STATE_CHECK;
 		}
-		#if (PWRFAIL_CONF_IGNORE_ERROR)
-			g_bootloaderState = recordStructure.record_state;		// 无视错误状态. 依然走断电续写流程.
-			goto STATE_CHECK;
-		#endif // PWRFAIL_CONF_IGNORE_ERROR
-
-		// 有错误状态. 且配置为不忽略错误. 重走升级流程,清除BKP相关区域.
-		Cus_Bootloader_PowerFailResume_ResetBKPField();
+		else if ( recordStructure.error_flag && hReturn )
+		{
+			#if (PWRFAIL_CONF_IGNORE_ERROR) == 1
+				g_bootloaderState = recordStructure.record_state;		// 无视错误状态. 依然走断电续写流程.
+			#elif (PWRFAIL_CONF_IGNORE_ERROR) == 0
+				// 有错误状态. 且配置为不忽略错误. 重走升级流程,清除BKP相关区域.
+				Cus_Bootloader_PowerFailResume_ResetBKPField();
+			#endif // PWRFAIL_CONF_IGNORE_ERROR
+		}
 	#endif // USE_POWER_FAIL_RESUME
 
 	uint8_t hReturn = Cus_Bootloader_CheckIAPRequest();
@@ -57,7 +58,6 @@ int main( void )
 	{
 		// No need to update. Jump to the APP.
 		g_bootloaderState = BL_STATE_JUMP_APP;
-		goto STATE_CHECK;
 	} 
 	else 
 	{
@@ -73,13 +73,16 @@ int main( void )
 
 	while(1)
 	{
-STATE_CHECK:
 		Cus_Bootloader_FeedIWDG();
 
 		switch (g_bootloaderState)
 		{
 			case BL_STATE_ERASE_APP:
 			{
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_ERASE_APP);	// 记录 BL_STATE_ERASE_APP 状态.
+				#endif 
+
 				uint32_t page_size = SIZE_PER_PAGE_KB * 1024;
 				uint32_t erase_count = (APP_REGION_SIZE + page_size - 1) / page_size;		// 向上取整.防止因APP START地址问题导致漏擦除.
 				uint16_t SuccessErasePages = Cus_Flash_ErasePages(APP_START_ADDRESS, erase_count);
@@ -89,6 +92,9 @@ STATE_CHECK:
 					for( ; ; );
 				}
 				g_bootloaderState = BL_STATE_WRITE_FW;
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_WRITE_FW);  // 记录 BL_STATE_WRITE_FW 状态.
+				#endif 
 
 				break;
 			}
@@ -98,6 +104,16 @@ STATE_CHECK:
 				static uint16_t current_pages = 0;
 				static uint32_t current_downloadAddr = DOWNLOAD_START_ADDRESS;
 				static uint32_t current_appAddr = APP_START_ADDRESS;
+
+				#if (USE_POWER_FAIL_RESUME)
+					static uint8_t resume_initialize = 0;
+					if ( !resume_initialize )
+					{
+						Cus_Bootloader_PowerFailResume_ReloadWriteParams(&current_pages, &current_downloadAddr, &current_appAddr);
+						resume_initialize = 1;		// 不可重入标志.
+					}
+					
+				#endif 
 
 				if ( is_Retry )
 				{
@@ -119,6 +135,9 @@ STATE_CHECK:
 					Cus_BootloaderHook_WriteFailed(pPage->PageAddress, hReturn);
 					for( ; ; );								// 写入失败. 由于已经擦除APP区. 此处失败后进入死循环. 待下一步处理.
 				}
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_PagesIncrease();		// 成功写入一页，BKP对应记录器++.
+				#endif 
 
 				current_pages++;	
 				current_downloadAddr += (SIZE_PER_PAGE_KB * 1024);		// 偏移到下个待读取的页.
@@ -132,6 +151,10 @@ STATE_CHECK:
 						// 无剩余不到一个页大小的数据.
 						g_bootloaderState = BL_STATE_VERIFY_FW;
 						pPage->Release(pPage);
+
+						#if (USE_POWER_FAIL_RESUME)
+							Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_VERIFY_FW);
+						#endif 
 						break;	
 					}
 
@@ -153,6 +176,10 @@ STATE_CHECK:
 
 						pPage->Release(pPage);
 						g_bootloaderState = BL_STATE_VERIFY_FW;
+
+						#if (USE_POWER_FAIL_RESUME)
+							Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_VERIFY_FW);
+						#endif 
 						break;
 					}
 				}
@@ -171,6 +198,11 @@ STATE_CHECK:
 					if ( retry_count <= 3 )
 					{
 						is_Retry = true;
+
+						#if (USE_POWER_FAIL_RESUME)
+							Cus_Bootloader_PowerFailResume_ResetBKPField();		// Retry 前清除此前计数. 保证BKP记录与Bootloader一致.
+						#endif 
+
 						g_bootloaderState = BL_STATE_ERASE_APP;		// Back to BL_STATE_ERASE_APP.
 						break;
 					}
@@ -185,6 +217,10 @@ STATE_CHECK:
 				is_Retry = false;
 				retry_count = 0;
 				g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
+
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_CLEAR_IAP_FLAG);
+				#endif 
 				break;
 			}
 
@@ -202,6 +238,9 @@ STATE_CHECK:
 				}
 
 				g_bootloaderState = BL_STATE_JUMP_APP;
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_JUMP_APP);
+				#endif 				
 				break;
 			}
 
@@ -250,6 +289,11 @@ STATE_CHECK:
 				__set_MSP(msp);							// 设置主堆栈.
 
 				void (*app_entry)(void) = (void (*)(void))reset_vector;
+
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_ResetBKPField();		// 最后跳转前彻底清除断电续传标志.
+				#endif 
+
 				app_entry();
 
 				for( ; ; );			// 正常情况下. 程序不应该运行到这里.

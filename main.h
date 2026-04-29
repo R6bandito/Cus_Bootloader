@@ -4,6 +4,7 @@
 #include "stm32f1xx_hal.h"
 #include "Bootloader.h"
 #include "led_test.h"
+#include "assert.h"
 
 
 #endif // __MAIN_H__

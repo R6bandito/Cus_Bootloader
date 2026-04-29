@@ -65,8 +65,9 @@ void Cus_Bootloader_FeedIWDG( void );
     void Cus_Bootloader_PowerFailResume_PagesIncrease( void );
     void Cus_Bootloader_PowerFailResume_SetError( void );
     void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state );
-    void Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void );
+    uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void );
     void Cus_Bootloader_PowerFailResume_ResetBKPField( void );
+    void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_pages, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr );
   #endif // USE_POWER_FAIL_RESUME
 /* -------------------------------------------------------------------- */
 
