@@ -22,6 +22,8 @@ int main( void )
 
 	g_bootloaderState = BL_STATE_START;
 
+	HAL_Delay(500);
+
 	#if (USE_RECOVERY_APP)
 		uint32_t bootCount = Cus_Bootloader_GetBootCount();
 		if ( bootCount >= MAX_FAILED_COUNT )
@@ -34,6 +36,17 @@ int main( void )
 
 		Cus_Bootloader_IncreaseBootCount();		// 本次启动计数 + 1.(请在APP成功跳转后进行清除)
 	#endif // USE_RECOVERY_APP
+
+	uint8_t uReturn = Cus_Bootloader_CheckIAPRequest();
+	if ( !uReturn )		
+	{
+		// No need to update. Jump to the APP.
+		g_bootloaderState = BL_STATE_JUMP_APP;
+	} 
+	else 
+	{
+		g_bootloaderState = BL_STATE_ERASE_APP;
+	}
 
 	#if (USE_POWER_FAIL_RESUME)
 		uint8_t hReturn = Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField();		// 获取BKP内存储的烧写信息.
@@ -52,17 +65,6 @@ int main( void )
 			#endif // PWRFAIL_CONF_IGNORE_ERROR
 		}
 	#endif // USE_POWER_FAIL_RESUME
-
-	uint8_t hReturn = Cus_Bootloader_CheckIAPRequest();
-	if ( !hReturn )		
-	{
-		// No need to update. Jump to the APP.
-		g_bootloaderState = BL_STATE_JUMP_APP;
-	} 
-	else 
-	{
-		g_bootloaderState = BL_STATE_ERASE_APP;
-	}
 
 	// 固件更新信息.
 	uint32_t writeSize = ((IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR)->app_size;
@@ -110,9 +112,9 @@ int main( void )
 					if ( !resume_initialize )
 					{
 						Cus_Bootloader_PowerFailResume_ReloadWriteParams(&current_pages, &current_downloadAddr, &current_appAddr);
+						printf("\nPages: %d, downloadAddr: %x, appAddr: %x\n", current_pages, current_downloadAddr, current_appAddr);
 						resume_initialize = 1;		// 不可重入标志.
 					}
-					
 				#endif 
 
 				if ( is_Retry )
@@ -138,6 +140,20 @@ int main( void )
 				#if (USE_POWER_FAIL_RESUME)
 					Cus_Bootloader_PowerFailResume_PagesIncrease();		// 成功写入一页，BKP对应记录器++.
 				#endif 
+
+				/* ---------- 测试 ------------------- */
+				#if (RELEASE) == 0
+					static uint8_t test = 0;
+					test++;
+					if ( (test == 3) && (*(volatile uint16_t *)(0x40006C28)) != 1 )
+					{
+						*(volatile uint16_t *)(0x40006C28) = 1;
+						printf("\nPOWER_FIAL_RESUME_START_IN_5_SEC.\n");
+						HAL_Delay(5000);
+						NVIC_SystemReset();
+					}
+				#endif 
+			/* ---------------------------------- */
 
 				current_pages++;	
 				current_downloadAddr += (SIZE_PER_PAGE_KB * 1024);		// 偏移到下个待读取的页.
@@ -276,6 +292,10 @@ int main( void )
 					for( ; ; );
 				}
 
+				#if (USE_POWER_FAIL_RESUME)
+					Cus_Bootloader_PowerFailResume_ResetBKPField();		// 最后跳转前彻底清除断电续传标志.
+				#endif 
+
 				SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.
 				SysTick->LOAD = 0;
 				SysTick->VAL  = 0;
@@ -289,10 +309,6 @@ int main( void )
 				__set_MSP(msp);							// 设置主堆栈.
 
 				void (*app_entry)(void) = (void (*)(void))reset_vector;
-
-				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_ResetBKPField();		// 最后跳转前彻底清除断电续传标志.
-				#endif 
 
 				app_entry();
 

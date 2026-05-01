@@ -6,12 +6,15 @@
   #include "stm32f1xx_hal.h"            // 按需更换所使用头文件.
 /* ****************************** */
 
+
 /* -------------- Feature ------------------- */
+  #define RELEASE                 (1)
+
   #define USE_UTILS_DEBUG         (1)
   #define USE_UTILS_SYSCONF       (1)
   #define USE_RECOVERY_APP        (0)
-  #define USE_POWER_FAIL_RESUME   (0)         // 是否启用断电续传. 0=不启用,升级过程中断电后下次启动重新进行擦写流程. 1=启用,升级过程断电后，下次启动继续烧写.
-  #define USE_IWDG                (1)         // 接管IWDG喂狗操作. 0=未开启IWDG，耗时操作不处理喂狗. 1=开启IWDG，耗时操作自动处理喂狗. 
+  #define USE_POWER_FAIL_RESUME   (1)         // 是否启用断电续传. 0=不启用,升级过程中断电后下次启动重新进行擦写流程. 1=启用,升级过程断电后，下次启动继续烧写.
+  #define USE_IWDG                (0)         // 接管IWDG喂狗操作. 0=未开启IWDG，耗时操作不处理喂狗. 1=开启IWDG，耗时操作自动处理喂狗. 
 /* ------------------------------------------ */
 
 /* -------------- DB Config ------------------- */
@@ -26,7 +29,7 @@
 
 /* -------------- POWER_FAIL_RESUME Config ------------------- */
 #if (USE_POWER_FAIL_RESUME)
-  #define PWRFAIL_CONF_IGNORE_ERROR   (0)
+  #define PWRFAIL_CONF_IGNORE_ERROR   (1)
 #endif 
 /* ----------------------------------------------------------- */
 
@@ -86,16 +89,16 @@
     #define MAX_FAILED_COUNT                (4)              // 连续重启次数阈值
 
     #define RECOVERY_BKP_ADDR               (BKP_BASE)
-    #define RECOVERY_BKP_MAGIC              (0xDEADBEEFUL)   // 验证魔数
+    #define RECOVERY_BKP_MAGIC              (0xDEADUL)   // 验证魔数
   #endif // USE_RECOVERY_APP
 
-  #if (USE_POWER_FAIL_RESUME)
-    #define PWRFAIL_RESUME_BKP_START        (BKP_BASE + 2 * sizeof(uint32_t))   // 偏移两个BKP寄存器(前两个寄存器用于USE_RECOVERY_APP功能).
-    #define RESUME_BKP_MAGIC_ADDR           (PWRFAIL_RESUME_BKP_START)
-    #define RESUME_BKP_STATE_PAGES_ADDR     (PWRFAIL_RESUME_BKP_START + sizeof(uint32_t))   // State状态(高16位)和Pages(低16位)共用一个32位寄存器，节约BKP资源. 
-    #define RESUME_BKP_ERROR_FLAG_ADDR      (PWRFAIL_RESUME_BKP_START + 2 * sizeof(uint32_t)) // 错误标志. (1 ~ 31位保留) 0位有效.
+  #if (USE_POWER_FAIL_RESUME)  
+    #define RESUME_BKP_MAGIC_ADDR           (BKP_BASE + 0x0C)   // 偏移两个BKP寄存器(前两个寄存器用于USE_RECOVERY_APP功能).
+    #define RESUME_BKP_STATE_ADDR           (BKP_BASE + 0x10)   
+    #define RESUME_BKP_PAGE_ADDR            (BKP_BASE + 0x14)
+    #define RESUME_BKP_ERROR_FLAG_ADDR      (BKP_BASE + 0x18) // 错误标志.0位有效.
 
-    #define PWRFAIL_RESUME_BKP_MAGIC        (0xBA0000BAUL)   // 验证魔数.
+    #define PWRFAIL_RESUME_BKP_MAGIC        (0xBABAUL)   // 验证魔数.
   #endif // USE_POWER_FAIL_RESUME
 
 /* ------------------------------------------ */

@@ -279,25 +279,18 @@ void Cus_Bootloader_FeedIWDG( void )
 
     void Cus_Bootloader_PowerFailResume_PagesIncrease( void )
     {
-      if ( *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )   
+      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )   
       {
         // 第一次写入时再写入魔数.
-        uint32_t resume_bkp_magic = RESUME_BKP_MAGIC_ADDR;
-        *(volatile uint32_t *)resume_bkp_magic = PWRFAIL_RESUME_BKP_MAGIC;    // 魔数写入.
+        *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR = PWRFAIL_RESUME_BKP_MAGIC;  // 魔数写入.
       }
 
-      uint32_t resume_bkp_pages = RESUME_BKP_STATE_PAGES_ADDR;
-      uint32_t register_val_low16 = 0;
-      uint32_t register_val_high16 = 0;
+      uint16_t pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;
+      pages++;
+      *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR = pages;
+      __DSB();
 
-      register_val_low16 = *(volatile uint32_t *)resume_bkp_pages & 0xFFFF; 
-      register_val_high16 = *(volatile uint32_t *)resume_bkp_pages & 0xFFFF0000;
-
-      register_val_low16++;
-
-      *(volatile uint32_t *)resume_bkp_pages = register_val_high16 | register_val_low16;    __nop();
-
-      if ( *(volatile uint32_t *)RESUME_BKP_STATE_PAGES_ADDR != (register_val_high16 | register_val_low16) )
+      if ( *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR != pages )
       {
         // 写入后回读验证失败.(极小概率)
         // 置错误位. 代表当前数据不可信.
@@ -308,31 +301,25 @@ void Cus_Bootloader_FeedIWDG( void )
 
     void Cus_Bootloader_PowerFailResume_SetError( void )
     {
-      if ( *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return;   // 魔数验证失败,空调用.
+      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return;   // 魔数验证失败,空调用.
 
-      uint32_t error_bkp = RESUME_BKP_ERROR_FLAG_ADDR;
-      *(volatile uint32_t *)error_bkp = 0x01;   // 此处不验证，因为此前已处于异常路径.
+      uint16_t error_bkp = RESUME_BKP_ERROR_FLAG_ADDR;
+      *(volatile uint16_t *)error_bkp = 0x01;   // 此处不验证，因为此前已处于异常路径.
     }
 
 
     void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state )
     {
-      if ( *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return;   // 魔数验证失败,空调用.
-
-      volatile uint32_t *ptr = (volatile uint32_t *)RESUME_BKP_STATE_PAGES_ADDR;
-
-      uint32_t old_val = *ptr;
-      uint32_t new_val = (old_val & 0xFFFF) | ((uint32_t)state << 16);
-      *ptr = new_val;
+      *(volatile uint16_t *)RESUME_BKP_STATE_ADDR = (uint16_t)state;
       __DSB();
 
-      if ( (*ptr & 0xFFFF0000) != ((uint32_t)state << 16) )
+      if ( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR != (uint16_t)state )
       {
         Cus_Bootloader_PowerFailResume_SetError();
       }
     }
 
-    static inline BL_State_t Cus_Bootloader_PowerFailResume_ToBLState( uint32_t val ) 
+    static inline BL_State_t Cus_Bootloader_PowerFailResume_ToBLState( uint16_t val ) 
     {
       return (val <= BL_STATE_JUMP_APP) ? (BL_State_t)val : BL_STATE_START;
     }
@@ -340,13 +327,13 @@ void Cus_Bootloader_FeedIWDG( void )
 
     uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void )
     {
-      if ( *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return 0;   // 魔数验证失败,空调用.
+      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return 0;   // 魔数验证失败,空调用.
 
-      recordStructure.record_magic = *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR;
-      recordStructure.record_pages = (*(volatile uint32_t *)RESUME_BKP_STATE_PAGES_ADDR & 0xFFFF);
-      recordStructure.error_flag = (*(volatile uint32_t *)RESUME_BKP_ERROR_FLAG_ADDR & 0x01);
+      recordStructure.record_magic = *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR;
+      recordStructure.record_pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;;
+      recordStructure.error_flag = (uint8_t)(*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR & 0x01);
 
-      BL_State_t Cvstate = Cus_Bootloader_PowerFailResume_ToBLState( (*(volatile uint32_t *)RESUME_BKP_STATE_PAGES_ADDR >> 16) );
+      BL_State_t Cvstate = Cus_Bootloader_PowerFailResume_ToBLState( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR );
       recordStructure.record_state = Cvstate;
 
       return 1;
@@ -355,9 +342,10 @@ void Cus_Bootloader_FeedIWDG( void )
 
     void Cus_Bootloader_PowerFailResume_ResetBKPField( void )
     {
-      *(volatile uint32_t *)RESUME_BKP_MAGIC_ADDR = 0x00;
-      *(volatile uint32_t *)RESUME_BKP_ERROR_FLAG_ADDR = 0x00;
-      *(volatile uint32_t *)RESUME_BKP_STATE_PAGES_ADDR = 0x00;
+      *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR      = 0x00;
+      *(volatile uint16_t *)RESUME_BKP_STATE_ADDR      = 0x00;
+      *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR       = 0x00;
+      *(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR = 0x00;
     }
 
 
