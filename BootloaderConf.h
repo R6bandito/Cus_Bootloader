@@ -12,7 +12,7 @@
 
   #define USE_UTILS_DEBUG         (1)
   #define USE_UTILS_SYSCONF       (1)
-  #define USE_RECOVERY_APP        (0)
+  #define USE_RECOVERY_APP        (1)
   #define USE_POWER_FAIL_RESUME   (1)         // 是否启用断电续传. 0=不启用,升级过程中断电后下次启动重新进行擦写流程. 1=启用,升级过程断电后，下次启动继续烧写.
   #define USE_IWDG                (0)         // 接管IWDG喂狗操作. 0=未开启IWDG，耗时操作不处理喂狗. 1=开启IWDG，耗时操作自动处理喂狗. 
 /* ------------------------------------------ */
@@ -80,7 +80,7 @@
   #define MCU_SRAM_SIZE                     (64 * 1024)
 
   #define IAP_MAGIC_WORD                    (0xAA55UL)  
-  #define SIZE_PER_PAGE_KB                  (2)              // 2KB Per Page.
+  #define BYTES_PER_PACKS                   (1024UL)
 
 
   #if (USE_RECOVERY_APP)

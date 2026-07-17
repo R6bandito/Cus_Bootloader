@@ -2,8 +2,8 @@
 
 
 /* ---------------------------------------------- */
+uint8_t wBuf[BYTES_PER_PACKS];
 extern volatile BL_State_t g_bootloaderState;
-Cus_Flash_Page_t *pPage;
 static bool is_Retry = false;
 
 #if (USE_POWER_FAIL_RESUME)
@@ -67,11 +67,11 @@ int main( void )
 	#endif // USE_POWER_FAIL_RESUME
 
 	// 固件更新信息.
-	uint32_t writeSize = ((IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR)->app_size;
-	uint32_t total_pages = (writeSize / (SIZE_PER_PAGE_KB * 1024));
-	uint32_t remaining = (writeSize % (SIZE_PER_PAGE_KB * 1024));
-
-	Factory_GetPageControlBlock(&pPage);
+	IAP_Info_t iap_info;
+    g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, (uint8_t *)&iap_info, sizeof(iap_info));
+	uint32_t writeSize = iap_info.app_size;
+	uint32_t total_packs = (writeSize / BYTES_PER_PACKS);
+	uint32_t remaining = (writeSize % BYTES_PER_PACKS);
 
 	while(1)
 	{
@@ -85,12 +85,10 @@ int main( void )
 					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_ERASE_APP);	// 记录 BL_STATE_ERASE_APP 状态.
 				#endif 
 
-				uint32_t page_size = SIZE_PER_PAGE_KB * 1024;
-				uint32_t erase_count = (APP_REGION_SIZE + page_size - 1) / page_size;		// 向上取整.防止因APP START地址问题导致漏擦除.
-				uint16_t SuccessErasePages = Cus_Flash_ErasePages(APP_START_ADDRESS, erase_count);
-				if ( SuccessErasePages != erase_count )
+				int hReturn = g_BootFlash->Erase(APP_START_ADDRESS, APP_REGION_SIZE);
+				if ( hReturn < 0 )
 				{
-					Cus_BootloaderHook_EraseFailed( (APP_START_ADDRESS + (SuccessErasePages * 1024)), CUS_FLASH_ERROR );
+					Cus_BootloaderHook_EraseFailed(APP_START_ADDRESS, hReturn);
 					for( ; ; );
 				}
 				g_bootloaderState = BL_STATE_WRITE_FW;
@@ -103,7 +101,7 @@ int main( void )
 
 			case BL_STATE_WRITE_FW:
 			{
-				static uint16_t current_pages = 0;
+				static uint16_t current_packs = 0;
 				static uint32_t current_downloadAddr = DOWNLOAD_START_ADDRESS;
 				static uint32_t current_appAddr = APP_START_ADDRESS;
 
@@ -111,34 +109,31 @@ int main( void )
 					static uint8_t resume_initialize = 0;
 					if ( !resume_initialize )
 					{
-						Cus_Bootloader_PowerFailResume_ReloadWriteParams(&current_pages, &current_downloadAddr, &current_appAddr);
-						printf("\nPages: %d, downloadAddr: %x, appAddr: %x\n", current_pages, current_downloadAddr, current_appAddr);
+						Cus_Bootloader_PowerFailResume_ReloadWriteParams(&current_packs, &current_downloadAddr, &current_appAddr);
+						printf("\nPages: %d, downloadAddr: %x, appAddr: %x\n", current_packs, current_downloadAddr, current_appAddr);
 						resume_initialize = 1;		// 不可重入标志.
 					}
 				#endif 
 
 				if ( is_Retry )
 				{
-					current_pages = 0;
+					current_packs = 0;
 					current_downloadAddr = DOWNLOAD_START_ADDRESS;
 					current_appAddr = APP_START_ADDRESS;
 				}
 
-				pPage->Reset(pPage);
-
-				pPage->PageAddress = current_appAddr;
-				memcpy(pPage->PageDataBuffer, (uint8_t *)current_downloadAddr, (SIZE_PER_PAGE_KB * 1024));
+				memcpy(wBuf, (uint8_t *)current_downloadAddr, BYTES_PER_PACKS);
 				Cus_Bootloader_FeedIWDG();
 
-				Cus_Flash_State_t hReturn = Cus_Flash_WritePage(pPage);
+				int hReturn = g_BootFlash->Write(current_appAddr, wBuf, BYTES_PER_PACKS);
 				Cus_Bootloader_FeedIWDG();
-				if ( hReturn != CUS_FLASH_OK )
+				if ( hReturn < 0 )
 				{
-					Cus_BootloaderHook_WriteFailed(pPage->PageAddress, hReturn);
-					for( ; ; );								// 写入失败. 由于已经擦除APP区. 此处失败后进入死循环. 待下一步处理.
+					/* TODO. */
+					Cus_BootloaderHook_WriteFailed(APP_START_ADDRESS, hReturn);
 				}
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_PagesIncrease();		// 成功写入一页，BKP对应记录器++.
+					Cus_Bootloader_PowerFailResume_PacksIncrease();		// 成功写入一页，BKP对应记录器++.
 				#endif 
 
 				/* ---------- 测试 ------------------- */
@@ -155,18 +150,17 @@ int main( void )
 				#endif 
 			/* ---------------------------------- */
 
-				current_pages++;	
-				current_downloadAddr += (SIZE_PER_PAGE_KB * 1024);		// 偏移到下个待读取的页.
-				current_appAddr += (SIZE_PER_PAGE_KB * 1024);					// 偏移到下一个待写入的页.
+				current_packs++;	
+				current_downloadAddr += BYTES_PER_PACKS;						// 偏移到下个待读取的页.
+				current_appAddr 	 += BYTES_PER_PACKS;					    // 偏移到下一个待写入的页.
 
-				if ( current_pages == total_pages )
+				if ( current_packs == total_packs )
 				{	
 					// 整数页已经写入完. 
 					if ( remaining == 0 )
 					{
 						// 无剩余不到一个页大小的数据.
 						g_bootloaderState = BL_STATE_VERIFY_FW;
-						pPage->Release(pPage);
 
 						#if (USE_POWER_FAIL_RESUME)
 							Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_VERIFY_FW);
@@ -174,23 +168,19 @@ int main( void )
 						break;	
 					}
 
-					if ( remaining != 0 && remaining < (SIZE_PER_PAGE_KB * 1024) )
+					if ( remaining != 0 && remaining < BYTES_PER_PACKS )
 					{
 						// 剩余数据不足一页.
 						Cus_Bootloader_FeedIWDG();
-						memset(pPage->PageDataBuffer, 0, (SIZE_PER_PAGE_KB * 1024));
-						memcpy(pPage->PageDataBuffer, (uint8_t *)current_downloadAddr, remaining);
-						pPage->PageAddress = current_appAddr;
-
-						Cus_Flash_State_t hReturn = Cus_Flash_WritePage(pPage);
+						memset(wBuf, 0, BYTES_PER_PACKS);
+						memcpy(wBuf, (uint8_t *)current_downloadAddr, remaining);
+						hReturn = g_BootFlash->Write(current_appAddr, wBuf, remaining);
 						Cus_Bootloader_FeedIWDG();
-						if ( hReturn != CUS_FLASH_OK )
+						if ( hReturn < 0 )
 						{
-							Cus_BootloaderHook_WriteFailed(pPage->PageAddress, hReturn);
-							for( ; ; );
+							Cus_BootloaderHook_WriteFailed(current_appAddr, hReturn);
 						}
 
-						pPage->Release(pPage);
 						g_bootloaderState = BL_STATE_VERIFY_FW;
 
 						#if (USE_POWER_FAIL_RESUME)
@@ -205,7 +195,7 @@ int main( void )
 		case BL_STATE_VERIFY_FW:
 			{
 				static uint8_t retry_count = 0;
-				bool is_FW_VerifyOK = Cus_Flash_VerifyBuffer(APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize);
+				bool is_FW_VerifyOK = g_BootFlash->Verify(APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize);
 				Cus_Bootloader_FeedIWDG();
 				if ( !is_FW_VerifyOK )
 				{
@@ -243,11 +233,10 @@ int main( void )
 		case BL_STATE_CLEAR_IAP_FLAG:
 			{
 				Cus_Bootloader_FeedIWDG();
-				uint32_t IAP_Info_Page = Cus_Flash_GetPageStart(IAP_INFO_STRUCT_START_ADDR);
 				
-				Cus_Flash_State_t eReturn = Cus_Flash_ErasePage(IAP_Info_Page);
+				int eReturn = g_BootFlash->Erase(IAP_INFO_STRUCT_START_ADDR, sizeof(IAP_Info_t));
 				Cus_Bootloader_FeedIWDG();
-				if ( eReturn != CUS_FLASH_OK )
+				if ( eReturn < 0 )
 				{
 					Cus_BootloaderHook_EraseFailed(IAP_INFO_STRUCT_START_ADDR, eReturn);
 					for( ; ; );

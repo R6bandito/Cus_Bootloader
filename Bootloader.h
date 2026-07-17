@@ -3,7 +3,7 @@
 
 
 #include "BootloaderConf.h"
-#include "Cus_Flash.h"
+#include "BootFlashPort.h"
 #include "Bootloader_Utils.h"
 #include "crc32table.h"
 
@@ -56,27 +56,27 @@ void Cus_Bootloader_FeedIWDG( void );
     {
       uint16_t record_magic;                // 数据有效性验证魔数.
       BL_State_t record_state;              // 保存的升级阶段.
-      uint16_t record_pages;                // 当前已成功写入的页索引（0-based）.
+      uint16_t record_packs;                // 当前已成功写入的页索引（0-based）.
       uint8_t error_flag;                   // 错误警告标志位.
 
     } Bootloader_record_t;
 
     void Cus_Bootloader_PowerFailResume_RecordInit( void );
-    void Cus_Bootloader_PowerFailResume_PagesIncrease( void );
+    void Cus_Bootloader_PowerFailResume_PacksIncrease( void );
     void Cus_Bootloader_PowerFailResume_SetError( void );
     void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state );
     uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void );
     void Cus_Bootloader_PowerFailResume_ResetBKPField( void );
-    void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_pages, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr );
+    void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_packs, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr );
   #endif // USE_POWER_FAIL_RESUME
 /* -------------------------------------------------------------------- */
 
 
 // 擦除失败时的 Hook（page_addr：失败的页地址，error：错误码）
-__weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_t error );
+__weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, int error );
 
 // 写入失败时的 Hook（target_addr：写入的目标地址，error：错误码）
-__weak void Cus_BootloaderHook_WriteFailed(uint32_t target_addr, Cus_Flash_State_t error);
+__weak void Cus_BootloaderHook_WriteFailed(uint32_t target_addr, int error);
 
 // 固件验证失败时的 Hook（region_start：验证起始地址，size：验证大小）
 __weak void Cus_BootloaderHook_VerifyFailed(uint32_t region_start, uint32_t size);

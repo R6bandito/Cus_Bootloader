@@ -6,7 +6,7 @@
 volatile BL_State_t g_bootloaderState;
 
 #if (USE_POWER_FAIL_RESUME)
-  Bootloader_record_t recordStructure;
+	Bootloader_record_t recordStructure;
 #endif // USE_POWER_FAIL_RESUME
 
 /* ---------------------------------------------- */
@@ -21,237 +21,251 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 /* ---------------------------------------------- */
 
 
-void Cus_Bootloader_Init( void )
-{
-  HAL_Init();
+	void Cus_Bootloader_Init( void )
+	{
+		HAL_Init();
 
-  #if (USE_UTILS_SYSCONF)
-    Cus_Bootloader_Utils_SystemClockConfig();
-  #else
-    #warning "User must provide a Custom SystemConfig API to Initialize the SystemClock if you dont use the default."
-    {
-      // Your API Called at Here.
-      // e.g. Custom_SystemClockConfig();
-    }
-  #endif // USE_UTILS_SYSCONF
-  
-  #if (USE_UTILS_DEBUG)
-    Cus_Bootloader_Utils_DebugUART();
-  #endif // USE_UTILS_DEBUG
+		#if (USE_UTILS_SYSCONF)
+			Cus_Bootloader_Utils_SystemClockConfig();
+		#else
+			#warning "User must provide a Custom SystemConfig API to Initialize the SystemClock if you dont use the default."
+			{
+				// Your API Called at Here.
+				// e.g. Custom_SystemClockConfig();
+			}
+		#endif // USE_UTILS_SYSCONF
 
-  #if (USE_RECOVERY_APP)
-    Cus_Bootloader_RecoveryInit();
-  #endif // USE_RECOVERY_APP
+		#if (USE_UTILS_DEBUG)
+			Cus_Bootloader_Utils_DebugUART();
+		#endif // USE_UTILS_DEBUG
 
-  #if (USE_POWER_FAIL_RESUME)
-    Cus_Bootloader_PowerFailResume_RecordInit();
-  #endif // USE_POWER_FAIL_RESUME
+		#if (USE_RECOVERY_APP)
+			Cus_Bootloader_RecoveryInit();
+		#endif // USE_RECOVERY_APP
 
-  Cus_Bootloader_FeedIWDG();
+		#if (USE_POWER_FAIL_RESUME)
+			Cus_Bootloader_PowerFailResume_RecordInit();
+		#endif // USE_POWER_FAIL_RESUME
 
-  Cus_Flash_CalibrateLatency();
-}
+		Cus_Bootloader_FeedIWDG();
+	}
 
 
-uint8_t Cus_Bootloader_CheckIAPRequest( void )
-{
-  IAP_Info_t *iap_info = (IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR;
+	uint8_t Cus_Bootloader_CheckIAPRequest( void )
+	{
+		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
+		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
+		if ( !isRead )
+		{
+			return 0;
+		}
 
-  g_bootloaderState = BL_STATE_CHECK_FLAG;
-  if ( iap_info->magic_word != IAP_MAGIC_WORD )   return 0;     // No IAP Update Request.
+		IAP_Info_t *iap_info = (IAP_Info_t *)buf;
 
-  if ( iap_info->app_size > DOWNLOAD_REGION_SIZE || iap_info->app_size == 0 )  return 0;   // Size Error.
+		g_bootloaderState = BL_STATE_CHECK_FLAG;
+		if ( iap_info->magic_word != IAP_MAGIC_WORD )   
+			return 0;     // No IAP Update Request.
 
-  g_bootloaderState = BL_STATE_VERIFY_CRC;
-  uint8_t CRC_CheckReturn = Cus_Bootloader_CRC32Verify(iap_info->CRC32);
-  if ( !CRC_CheckReturn )   
-  {
-    // CRC Verify Failed! Fireware not reliable.Discard this update required.
-    uint32_t IAP_Addr_Page = Cus_Flash_GetPageStart(IAP_INFO_STRUCT_START_ADDR);
-    Cus_Flash_State_t hReturn = Cus_Flash_ErasePage(IAP_Addr_Page);
-    if ( hReturn != CUS_FLASH_OK )
-    {
-      Cus_BootloaderHook_EraseFailed( IAP_INFO_STRUCT_START_ADDR, hReturn );
-    }
-    return 0;
-  }
+		if ( iap_info->app_size > DOWNLOAD_REGION_SIZE || iap_info->app_size == 0 )  
+			return 0;   // Size Error.
 
-  // CRC Verify Success.
-  return 1;
-}
+		g_bootloaderState = BL_STATE_VERIFY_CRC;
+		uint8_t CRC_CheckReturn = Cus_Bootloader_CRC32Verify(iap_info->CRC32);
+		if ( !CRC_CheckReturn )   
+		{
+			// CRC Verify Failed! Fireware not reliable.Discard this update required.
+			uint32_t eraseStartAddr = IAP_INFO_STRUCT_START_ADDR;
+			uint32_t eraseSize = sizeof(IAP_Info_t);
+			int hReturn = g_BootFlash->Erase(eraseStartAddr, eraseSize);
+			if ( hReturn < 0 )
+			{
+				Cus_BootloaderHook_EraseFailed( IAP_INFO_STRUCT_START_ADDR, hReturn );
+			}
+			return 0;
+		}
 
-
-static uint8_t Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC )
-{
-  IAP_Info_t *iap_info = (IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR;
-
-  uint32_t CalculateCRC = Cus_Bootloader_CRC32Caculate((uint8_t *)DOWNLOAD_START_ADDRESS, iap_info->app_size);
-
-  Cus_Bootloader_FeedIWDG();
-
-  if ( CalculateCRC != exptected_CRC )  return 0;   // CRC Verify Failed!
-
-  return 1;   
-}
+		// CRC Verify Success.
+		return 1;
+	}
 
 
-static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len )
-{
-  uint32_t crc = 0xFFFFFFFF;    // CRC 初始值.
-  const uint32_t *table = crc32_table;
+	static uint8_t Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC )
+	{
+		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
+		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
+		if ( !isRead )
+		{
+			return 0;
+		}
 
-  for( uint32_t i = 0; i < data_len; i++ )
-  {
-    crc = (crc >> 8) ^ table[(crc ^ pData[i]) & 0xFF];
+		IAP_Info_t *iap_info = (IAP_Info_t *)buf;
 
-    if ( i % 1024 == 0 )
-    {
-      Cus_Bootloader_FeedIWDG();    // 每1024字节喂狗一次.
-    }
-  }
+		uint32_t CalculateCRC = Cus_Bootloader_CRC32Caculate((uint8_t *)DOWNLOAD_START_ADDRESS, iap_info->app_size);
 
-  return crc ^ 0xFFFFFFFF; 
-}
+		Cus_Bootloader_FeedIWDG();
+
+		if ( CalculateCRC != exptected_CRC )  return 0;   // CRC Verify Failed!
+
+		return 1;   
+	}
 
 
+	static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len )
+	{
+		uint32_t crc = 0xFFFFFFFF;    // CRC 初始值.
+		const uint32_t *table = crc32_table;
 
-void Cus_Bootloader_FeedIWDG( void )
-{
-  #if (USE_IWDG)
-    uint16_t Reload = 0xAAAAUL;
+		for( uint32_t i = 0; i < data_len; i++ )
+		{
+			crc = (crc >> 8) ^ table[(crc ^ pData[i]) & 0xFF];
 
-    IWDG->KR = (Reload & 0xFFFFUL);
-  #endif
-  __nop();
-}
+			if ( i % 1024 == 0 )
+			{
+				Cus_Bootloader_FeedIWDG();    // 每1024字节喂狗一次.
+			}
+		}
+
+		return crc ^ 0xFFFFFFFF; 
+	}
+
+
+
+	void Cus_Bootloader_FeedIWDG( void )
+	{
+		#if (USE_IWDG)
+			uint16_t Reload = 0xAAAAUL;
+
+			IWDG->KR = (Reload & 0xFFFFUL);
+		#endif
+		__nop();
+	}
 
 
 
 /* ****************************** Options: Revocery ******************************************* */
   #if (USE_RECOVERY_APP)
 
-    void Cus_Bootloader_RecoveryInit( void )
-    {
-      // 解除 BKP 寄存器写保护.
-      uint32_t rcc_temp = RCC->APB1ENR;
-      rcc_temp |= (0x01UL << 28);         // PWREN 置 1.
-      rcc_temp |= (0x01UL << 27);         // BKPEN 置 1.
-      RCC->APB1ENR = rcc_temp;
+	void Cus_Bootloader_RecoveryInit( void )
+	{
+		// 解除 BKP 寄存器写保护.
+		uint32_t rcc_temp = RCC->APB1ENR;
+		rcc_temp |= (0x01UL << 28);         // PWREN 置 1.
+		rcc_temp |= (0x01UL << 27);         // BKPEN 置 1.
+		RCC->APB1ENR = rcc_temp;
 
-      uint32_t pwr_temp = PWR->CR;
-      pwr_temp |= (0x01UL << 8);          // DBP 置 1.
-      PWR->CR = pwr_temp;
-    }
-
-
-    uint32_t Cus_Bootloader_GetBootCount( void )
-    {
-      uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-
-      // 魔数不匹配 = 首次上电或掉电过，计数归零
-      if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  return 0;  // 魔数校验失败.返回 0 表示正常启动
-
-      uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);        // 第二个 BKP 寄存器.
-      return *(volatile uint32_t *)bkp_2registerAddr;
-    }
+		uint32_t pwr_temp = PWR->CR;
+		pwr_temp |= (0x01UL << 8);          // DBP 置 1.
+		PWR->CR = pwr_temp;
+	}
 
 
-    void Cus_Bootloader_IncreaseBootCount( void )
-    {
-      uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-      if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  
-      {
-        // 首次写入时，写入魔数验证码进行初始化.
-        uint32_t *bkp_1registerpAddr = (volatile uint32_t *)(RECOVERY_BKP_ADDR + 0x00UL);  // 首个BKP寄存器.
-        *bkp_1registerpAddr = RECOVERY_BKP_MAGIC;
-      }
+	uint32_t Cus_Bootloader_GetBootCount( void )
+	{
+		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
 
-      uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
-      *(volatile uint32_t *)bkp_2registerAddr += 1;
-    }
+		// 魔数不匹配 = 首次上电或掉电过，计数归零
+		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  return 0;  // 魔数校验失败.返回 0 表示正常启动
+
+		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);        // 第二个 BKP 寄存器.
+		return *(volatile uint32_t *)bkp_2registerAddr;
+	}
 
 
-    void Cus_Bootloader_ClearBootCount( void )
-    {
-      uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-      if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC  )   return;
+	void Cus_Bootloader_IncreaseBootCount( void )
+	{
+		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
+		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  
+		{
+			// 首次写入时，写入魔数验证码进行初始化.
+			uint32_t *bkp_1registerpAddr = (volatile uint32_t *)(RECOVERY_BKP_ADDR + 0x00UL);  // 首个BKP寄存器.
+			*bkp_1registerpAddr = RECOVERY_BKP_MAGIC;
+		}
 
-      *(volatile uint32_t *)bkp_1registerAddr = 0x00;   // 清除魔数.
-
-      uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
-      *(volatile uint32_t *)bkp_2registerAddr = 0x00;   // 清除数据.
-    }
-
-
-    void Cus_Bootloader_JumpToRecoveryAPP( void )     // 此处为便于独立逻辑，并未将其与main中的Jump逻辑进行整合合并为统一接口.
-    {
-      Cus_Bootloader_FeedIWDG();
-
-      uint32_t recovery_msp = *(volatile uint32_t *)RECOVERY_APP_START_ADDR;    // 读取栈顶.
-      if ( recovery_msp < MCU_SRAM_BASE_ADDR || recovery_msp > MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE )
-      {
-        // 最后恢复区APP栈顶地址非法.说明该区域从未被烧录或已损坏.
-        // 此时三层固件（APP、DOWNLOAD、RECOVERY）全部失效.
-        // 打印最后的诊断信息.
-        #if (USE_UTILS_DEBUG)
-          printf("========================================\n");
-          printf("\n=== FATAL: ALL FIRMWARE CORRUPTED ===\n");
-          printf("Recovery APP stack top: 0x%08X (invalid)\n", recovery_msp);
-          printf("Device halted. Re-program required.\n");
-          printf("========================================\n");
-        #endif
+		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
+		*(volatile uint32_t *)bkp_2registerAddr += 1;
+	}
 
 
-        for( ; ; )    // 死循环兜底.
-        {
-          #if (USE_IWDG)
-            Cus_Bootloader_FeedIWDG();    // 喂狗防止复位(APP DOWNLOAD RESCUE APP区均已出错. 再复位已无意义).
-            HAL_Delay(5);   
-          #endif // USE_IWDG
-        }   
-      }
+	void Cus_Bootloader_ClearBootCount( void )
+	{
+		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
+		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC  )   return;
 
-      uint32_t recovery_reset_vector = *(volatile uint32_t *)(RECOVERY_APP_START_ADDR + 0x04UL);    // 取出复位向量.
-      if ( recovery_reset_vector < RECOVERY_APP_START_ADDR || recovery_reset_vector > RECOVERY_APP_START_ADDR + RECOVERY_APP_REGION_SIZE )
-      {
-        #if (USE_UTILS_DEBUG)
-          printf("========================================\n");
-          printf(" \nFATAL ERROR: ALL FIRMWARE CORRUPTED\n");
-          printf("Bootloader: OK (0x%08X)\n", BOOTLOADER_START_ADDRESS);
-          printf("APP:        CORRUPTED\n");
-          printf("Download:   CORRUPTED or EMPTY\n");
-          printf("Recovery:   CORRUPTED or NOT PROGRAMMED\n");
-          printf("Recovery reset vector: 0x%08X (invalid)\n", recovery_reset_vector);
-          printf("\nDevice halted. Please re-program via debugger.\n");
-          printf("========================================\n");
-        #endif
+		*(volatile uint32_t *)bkp_1registerAddr = 0x00;   // 清除魔数.
 
-        for( ; ; )    // 死循环兜底.
-        {
-          #if (USE_IWDG)
-            Cus_Bootloader_FeedIWDG();    // 喂狗防止复位(APP DOWNLOAD RESCUE APP区均已出错. 再复位已无意义).
-            HAL_Delay(5);   
-          #endif // USE_IWDG
-        }   
-      }
+		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
+		*(volatile uint32_t *)bkp_2registerAddr = 0x00;   // 清除数据.
+	}
 
-      SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.
-      SysTick->LOAD = 0;
-      SysTick->VAL  = 0;
-      SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;		// 清除可能已经挂起的 SysTick 中断请求.
 
-      __disable_irq();
-      HAL_DeInit();
-      SCB->VTOR = RECOVERY_APP_START_ADDR;
-      __DSB();
-      __set_MSP(recovery_msp);
+	void Cus_Bootloader_JumpToRecoveryAPP( void )     // 此处为便于独立逻辑，并未将其与main中的Jump逻辑进行整合合并为统一接口.
+	{
+		Cus_Bootloader_FeedIWDG();
 
-      Cus_Bootloader_FeedIWDG();    // 跳转前最后一次喂狗.
-      void (*reset_entry)(void) = (void (*)(void))recovery_reset_vector;
-      reset_entry();
+		uint32_t recovery_msp = *(volatile uint32_t *)RECOVERY_APP_START_ADDR;    // 读取栈顶.
+		if ( recovery_msp < MCU_SRAM_BASE_ADDR || recovery_msp > MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE )
+		{
+			// 最后恢复区APP栈顶地址非法.说明该区域从未被烧录或已损坏.
+			// 此时三层固件（APP、DOWNLOAD、RECOVERY）全部失效.
+			// 打印最后的诊断信息.
+			#if (USE_UTILS_DEBUG)
+				printf("========================================\n");
+				printf("\n=== FATAL: ALL FIRMWARE CORRUPTED ===\n");
+				printf("Recovery APP stack top: 0x%08X (invalid)\n", recovery_msp);
+				printf("Device halted. Re-program required.\n");
+				printf("========================================\n");
+			#endif
 
-      for( ; ; );   // 程序不应该执行到这里.
-    }
+			for( ; ; )    // 死循环兜底.
+			{
+				#if (USE_IWDG)
+				Cus_Bootloader_FeedIWDG();    // 喂狗防止复位(APP DOWNLOAD RESCUE APP区均已出错. 再复位已无意义).
+				HAL_Delay(5);   
+				#endif // USE_IWDG
+			}   
+		}
+
+		uint32_t recovery_reset_vector = *(volatile uint32_t *)(RECOVERY_APP_START_ADDR + 0x04UL);    // 取出复位向量.
+		if ( recovery_reset_vector < RECOVERY_APP_START_ADDR || recovery_reset_vector > RECOVERY_APP_START_ADDR + RECOVERY_APP_REGION_SIZE )
+		{
+			#if (USE_UTILS_DEBUG)
+				printf("========================================\n");
+				printf(" \nFATAL ERROR: ALL FIRMWARE CORRUPTED\n");
+				printf("Bootloader: OK (0x%08X)\n", BOOTLOADER_START_ADDRESS);
+				printf("APP:        CORRUPTED\n");
+				printf("Download:   CORRUPTED or EMPTY\n");
+				printf("Recovery:   CORRUPTED or NOT PROGRAMMED\n");
+				printf("Recovery reset vector: 0x%08X (invalid)\n", recovery_reset_vector);
+				printf("\nDevice halted. Please re-program via debugger.\n");
+				printf("========================================\n");
+			#endif
+
+			for( ; ; )    // 死循环兜底.
+			{
+				#if (USE_IWDG)
+				Cus_Bootloader_FeedIWDG();    // 喂狗防止复位(APP DOWNLOAD RESCUE APP区均已出错. 再复位已无意义).
+				HAL_Delay(5);   
+				#endif // USE_IWDG
+			}   
+		}
+
+		SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.
+		SysTick->LOAD = 0;
+		SysTick->VAL  = 0;
+		SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;		// 清除可能已经挂起的 SysTick 中断请求.
+
+		__disable_irq();
+		HAL_DeInit();
+		SCB->VTOR = RECOVERY_APP_START_ADDR;
+		__DSB();
+		__set_MSP(recovery_msp);
+
+		Cus_Bootloader_FeedIWDG();    // 跳转前最后一次喂狗.
+		void (*reset_entry)(void) = (void (*)(void))recovery_reset_vector;
+		reset_entry();
+
+		for( ; ; );   // 程序不应该执行到这里.
+	}
 
   #endif // USE_RECOVERY_APP
 /* ******************************************************************************************** */
@@ -260,64 +274,65 @@ void Cus_Bootloader_FeedIWDG( void )
 /* ****************************** Options: POWER_FAIL_RESUME ******************************************* */
   #if (USE_POWER_FAIL_RESUME)
 
-    void Cus_Bootloader_PowerFailResume_RecordInit( void )
-    {
-      uint32_t rcc_temp = RCC->APB1ENR;
-      uint32_t pwr_temp = PWR->CR;
-      if ( (rcc_temp & (0x01UL << 27)) != 1 || (rcc_temp & (0x01UL << 28)) != 1 || (pwr_temp & (0x01UL << 8)) != 1 )
-      {
-        // BKP域未开启访问. 将其开启.
-        rcc_temp |= (0x01UL << 28);
-        rcc_temp |= (0x01UL << 27);
-        RCC->APB1ENR = rcc_temp;
+	void Cus_Bootloader_PowerFailResume_RecordInit( void )
+	{
+		uint32_t rcc_temp = RCC->APB1ENR;
+		uint32_t pwr_temp = PWR->CR;
+		if ( (rcc_temp & (0x01UL << 27)) != 1 || (rcc_temp & (0x01UL << 28)) != 1 || (pwr_temp & (0x01UL << 8)) != 1 )
+		{
+			// BKP域未开启访问. 将其开启.
+			rcc_temp |= (0x01UL << 28);
+			rcc_temp |= (0x01UL << 27);
+			RCC->APB1ENR = rcc_temp;
 
-        pwr_temp |= (0x01UL << 8);
-        PWR->CR = pwr_temp;
-      }
-    }
-
-
-    void Cus_Bootloader_PowerFailResume_PagesIncrease( void )
-    {
-      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )   
-      {
-        // 第一次写入时再写入魔数.
-        *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR = PWRFAIL_RESUME_BKP_MAGIC;  // 魔数写入.
-      }
-
-      uint16_t pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;
-      pages++;
-      *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR = pages;
-      __DSB();
-
-      if ( *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR != pages )
-      {
-        // 写入后回读验证失败.(极小概率)
-        // 置错误位. 代表当前数据不可信.
-        Cus_Bootloader_PowerFailResume_SetError();
-      }
-    }
+			pwr_temp |= (0x01UL << 8);
+			PWR->CR = pwr_temp;
+		}
+	}
 
 
-    void Cus_Bootloader_PowerFailResume_SetError( void )
-    {
-      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return;   // 魔数验证失败,空调用.
+	void Cus_Bootloader_PowerFailResume_PacksIncrease( void )
+	{
+		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )   
+		{
+			// 第一次写入时再写入魔数.
+			*(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR = PWRFAIL_RESUME_BKP_MAGIC;  // 魔数写入.
+		}
 
-      uint16_t error_bkp = RESUME_BKP_ERROR_FLAG_ADDR;
-      *(volatile uint16_t *)error_bkp = 0x01;   // 此处不验证，因为此前已处于异常路径.
-    }
+		uint16_t pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;
+		pages++;
+		*(volatile uint16_t *)RESUME_BKP_PAGE_ADDR = pages;
+		__DSB();
+
+		if ( *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR != pages )
+		{
+			// 写入后回读验证失败.(极小概率)
+			// 置错误位. 代表当前数据不可信.
+			Cus_Bootloader_PowerFailResume_SetError();
+		}
+	}
 
 
-    void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state )
-    {
-      *(volatile uint16_t *)RESUME_BKP_STATE_ADDR = (uint16_t)state;
-      __DSB();
+	void Cus_Bootloader_PowerFailResume_SetError( void )
+	{
+		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    	
+			return;   // 魔数验证失败,空调用.
 
-      if ( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR != (uint16_t)state )
-      {
-        Cus_Bootloader_PowerFailResume_SetError();
-      }
-    }
+		uint16_t error_bkp = RESUME_BKP_ERROR_FLAG_ADDR;
+		*(volatile uint16_t *)error_bkp = 0x01;   // 此处不验证，因为此前已处于异常路径.
+	}
+
+
+	void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state )
+	{
+		*(volatile uint16_t *)RESUME_BKP_STATE_ADDR = (uint16_t)state;
+		__DSB();
+
+		if ( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR != (uint16_t)state )
+		{
+			Cus_Bootloader_PowerFailResume_SetError();
+		}
+	}
 
     static inline BL_State_t Cus_Bootloader_PowerFailResume_ToBLState( uint16_t val ) 
     {
@@ -325,70 +340,76 @@ void Cus_Bootloader_FeedIWDG( void )
     }
 
 
-    uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void )
-    {
-      if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return 0;   // 魔数验证失败,空调用.
+	uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void )
+	{
+		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return 0;   // 魔数验证失败,空调用.
 
-      recordStructure.record_magic = *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR;
-      recordStructure.record_pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;;
-      recordStructure.error_flag = (uint8_t)(*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR & 0x01);
+		recordStructure.record_magic = *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR;
+		recordStructure.record_packs = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;;
+		recordStructure.error_flag = (uint8_t)(*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR & 0x01);
 
-      BL_State_t Cvstate = Cus_Bootloader_PowerFailResume_ToBLState( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR );
-      recordStructure.record_state = Cvstate;
+		BL_State_t Cvstate = Cus_Bootloader_PowerFailResume_ToBLState( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR );
+		recordStructure.record_state = Cvstate;
 
-      return 1;
-    }
-
-
-    void Cus_Bootloader_PowerFailResume_ResetBKPField( void )
-    {
-      *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR      = 0x00;
-      *(volatile uint16_t *)RESUME_BKP_STATE_ADDR      = 0x00;
-      *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR       = 0x00;
-      *(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR = 0x00;
-    }
+		return 1;
+	}
 
 
-    void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_pages, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr )
-    {
-      // 该方法只初始化一次. 不允许重入！（无论是正常上电还是断电续传）. 由上层保证.
-      if ( !p_current_appAddr || !p_current_downloadAddr || !p_current_pages )  return;
+	void Cus_Bootloader_PowerFailResume_ResetBKPField( void )
+	{
+		*(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR      = 0x00;
+		*(volatile uint16_t *)RESUME_BKP_STATE_ADDR      = 0x00;
+		*(volatile uint16_t *)RESUME_BKP_PAGE_ADDR       = 0x00;
+		*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR = 0x00;
+	}
 
-      if ( recordStructure.record_magic != PWRFAIL_RESUME_BKP_MAGIC )   return; 
 
-      #if (PWRFAIL_CONF_IGNORE_ERROR) == 0
-        if ( recordStructure.error_flag != 0 )  return;
-      #endif 
+	void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_packs, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr )
+	{
+		// 该方法只初始化一次. 不允许重入！（无论是正常上电还是断电续传）. 由上层保证.
+		if ( !p_current_appAddr || !p_current_downloadAddr || !p_current_packs )  return;
 
-      const IAP_Info_t *p_IAP_info = (const IAP_Info_t *)IAP_INFO_STRUCT_START_ADDR;
-      if ( p_IAP_info->magic_word != IAP_MAGIC_WORD )   return;   // IAP信息有误.(意外擦除, 损毁). (一般不应发生这种情况，此处仅作保留)
+		if ( recordStructure.record_magic != PWRFAIL_RESUME_BKP_MAGIC )   return; 
 
-      *p_current_pages = recordStructure.record_pages;
-      *p_current_downloadAddr = DOWNLOAD_START_ADDRESS + (recordStructure.record_pages * (SIZE_PER_PAGE_KB * 1024));  // 按页进行偏移.
-      *p_current_appAddr = APP_START_ADDRESS + (recordStructure.record_pages * (SIZE_PER_PAGE_KB * 1024));
+		#if (PWRFAIL_CONF_IGNORE_ERROR) == 0
+			if ( recordStructure.error_flag != 0 )  return;
+		#endif 
 
-      if ( *p_current_downloadAddr < DOWNLOAD_START_ADDRESS || *p_current_downloadAddr > DOWNLOAD_START_ADDRESS + DOWNLOAD_REGION_SIZE || 
-            *p_current_appAddr < APP_START_ADDRESS || *p_current_appAddr > APP_START_ADDRESS + APP_REGION_SIZE )
-      {
-        // 计算出来的位置错误？擦除整个已写APP. 降级为普通模式，从头开始擦写.
-        uint32_t page_size = SIZE_PER_PAGE_KB * 1024;
-				uint32_t erase_count = (APP_REGION_SIZE + page_size - 1) / page_size;		// 向上取整.防止因APP START地址问题导致漏擦除.
-				uint16_t SuccessErasePages = Cus_Flash_ErasePages(APP_START_ADDRESS, erase_count);
-        Cus_Bootloader_FeedIWDG();
-				if ( SuccessErasePages != erase_count )
-				{
-					Cus_BootloaderHook_EraseFailed( (APP_START_ADDRESS + (SuccessErasePages * 1024)), CUS_FLASH_ERROR );
-					for( ; ; );
-				}
+		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
+		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
+		if ( !isRead )
+		{
+			return;
+		}
 
-        // 降级为默认配置.
-        *p_current_downloadAddr = DOWNLOAD_START_ADDRESS;
-        *p_current_appAddr = APP_START_ADDRESS;
-        *p_current_pages = 0;
+		IAP_Info_t *p_IAP_info = (IAP_Info_t *)buf;
+		if ( p_IAP_info->magic_word != IAP_MAGIC_WORD )   return;   // IAP信息有误.(意外擦除, 损毁). (一般不应发生这种情况，此处仅作保留)
 
-        Cus_Bootloader_PowerFailResume_ResetBKPField();   // 降级处理后清除BKP信息. 下次启动视为全新启动.
-      }
-    }
+		*p_current_packs = recordStructure.record_packs;
+		*p_current_downloadAddr = DOWNLOAD_START_ADDRESS + (recordStructure.record_packs * BYTES_PER_PACKS);  // 按页进行偏移.
+		*p_current_appAddr = APP_START_ADDRESS + (recordStructure.record_packs * BYTES_PER_PACKS);
+
+		if ( *p_current_downloadAddr < DOWNLOAD_START_ADDRESS || *p_current_downloadAddr > DOWNLOAD_START_ADDRESS + DOWNLOAD_REGION_SIZE || 
+			*p_current_appAddr < APP_START_ADDRESS || *p_current_appAddr > APP_START_ADDRESS + APP_REGION_SIZE )
+		{
+			// 计算出来的位置错误？擦除整个已写APP. 降级为普通模式，从头开始擦写.
+			int hReturn = g_BootFlash->Erase(APP_START_ADDRESS, APP_REGION_SIZE);
+			Cus_Bootloader_FeedIWDG();
+
+			if ( hReturn < 0 )
+			{
+				Cus_BootloaderHook_EraseFailed(APP_START_ADDRESS, hReturn);
+				for( ; ; );
+			}
+
+			// 降级为默认配置.
+			*p_current_downloadAddr = DOWNLOAD_START_ADDRESS;
+			*p_current_appAddr = APP_START_ADDRESS;
+			*p_current_packs = 0;
+
+			Cus_Bootloader_PowerFailResume_ResetBKPField();   // 降级处理后清除BKP信息. 下次启动视为全新启动.
+		}
+	}
 
   #endif // USE_POWER_FAIL_RESUME
 /* ******************************************************************************************** */
@@ -396,7 +417,7 @@ void Cus_Bootloader_FeedIWDG( void )
 
 /* ****************************** Hook Default ******************************************* */
 
-__weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_t error )
+__weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, int error )
 {
   UNUSED(page_addr);
   UNUSED(error);
@@ -411,7 +432,7 @@ __weak void Cus_BootloaderHook_EraseFailed( uint32_t page_addr, Cus_Flash_State_
 }
 
 
-__weak void Cus_BootloaderHook_WriteFailed( uint32_t target_addr, Cus_Flash_State_t error )
+__weak void Cus_BootloaderHook_WriteFailed( uint32_t target_addr, int error )
 {
   UNUSED(target_addr);
   UNUSED(error);
