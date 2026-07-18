@@ -7,7 +7,7 @@ extern volatile BL_State_t g_bootloaderState;
 static bool is_Retry = false;
 
 #if (USE_POWER_FAIL_RESUME)
-  extern Bootloader_record_t recordStructure;
+  extern BootResume_Data_t LoadConf;
 #endif // USE_POWER_FAIL_RESUME
 /* ---------------------------------------------- */
 
@@ -49,20 +49,11 @@ int main( void )
 	}
 
 	#if (USE_POWER_FAIL_RESUME)
-		uint8_t hReturn = Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField();		// 获取BKP内存储的烧写信息.
-		if ( !recordStructure.error_flag && hReturn )
+		bool isLoad = g_BootResume->Load(&LoadConf);
+		if ( isLoad )
 		{
-			// 无错误状态. 状态更新 + 跳转.
-			g_bootloaderState = recordStructure.record_state;
-		}
-		else if ( recordStructure.error_flag && hReturn )
-		{
-			#if (PWRFAIL_CONF_IGNORE_ERROR) == 1
-				g_bootloaderState = recordStructure.record_state;		// 无视错误状态. 依然走断电续写流程.
-			#elif (PWRFAIL_CONF_IGNORE_ERROR) == 0
-				// 有错误状态. 且配置为不忽略错误. 重走升级流程,清除BKP相关区域.
-				Cus_Bootloader_PowerFailResume_ResetBKPField();
-			#endif // PWRFAIL_CONF_IGNORE_ERROR
+			// 状态更新 + 跳转.
+			g_bootloaderState = LoadConf.state;
 		}
 	#endif // USE_POWER_FAIL_RESUME
 
@@ -82,7 +73,12 @@ int main( void )
 			case BL_STATE_ERASE_APP:
 			{
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_ERASE_APP);	// 记录 BL_STATE_ERASE_APP 状态.
+					LoadConf.state = BL_STATE_ERASE_APP;			// 记录 BL_STATE_ERASE_APP 状态.
+					bool ldReturn = g_BootResume->Save(&LoadConf);
+					if ( !ldReturn )
+					{
+						/* Err. TODO, */
+					}
 				#endif 
 
 				int hReturn = g_BootFlash->Erase(APP_START_ADDRESS, APP_REGION_SIZE);
@@ -92,8 +88,14 @@ int main( void )
 					for( ; ; );
 				}
 				g_bootloaderState = BL_STATE_WRITE_FW;
+
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_WRITE_FW);  // 记录 BL_STATE_WRITE_FW 状态.
+					LoadConf.state = BL_STATE_WRITE_FW;
+					ldReturn = g_BootResume->Save(&LoadConf);		// 记录 BL_STATE_WRITE_FW 状态.
+					if ( !ldReturn )
+					{
+						/* TODO. */
+					}
 				#endif 
 
 				break;
@@ -109,8 +111,59 @@ int main( void )
 					static uint8_t resume_initialize = 0;
 					if ( !resume_initialize )
 					{
-						Cus_Bootloader_PowerFailResume_ReloadWriteParams(&current_packs, &current_downloadAddr, &current_appAddr);
-						printf("\nPages: %d, downloadAddr: %x, appAddr: %x\n", current_packs, current_downloadAddr, current_appAddr);
+						/* Get the stored status parameters. */
+						current_packs = LoadConf.packs;
+						current_downloadAddr = (DOWNLOAD_START_ADDRESS + (LoadConf.packs * BYTES_PER_PACKS));
+						current_appAddr = (APP_START_ADDRESS + (LoadConf.packs * BYTES_PER_PACKS));
+
+						/* Locate the target byte address based on the recorded pack parameters. */
+						uint32_t resume_offset = 0;
+						volatile uint8_t *app = (volatile uint8_t *)current_appAddr;
+						volatile uint8_t *download = (volatile uint8_t *)current_downloadAddr;
+
+						for( uint32_t off = 0; off < BYTES_PER_PACKS; off++ )
+						{
+							if ( app[off] != download[off] )
+							{
+								/* Locate the byte boundary for the pending write prior to power loss. */
+								resume_offset = off + 1;
+								break;
+							}
+						}
+
+						if ( resume_offset )
+						{
+							/* Resume: write only the remaining bytes of the current pack */
+							uint32_t thisPackRemain = BYTES_PER_PACKS - resume_offset;
+							memcpy(wBuf, (uint8_t *)current_downloadAddr, thisPackRemain);
+							int hReturn = g_BootFlash->Write((current_appAddr + resume_offset), wBuf, thisPackRemain);
+							if ( hReturn < 0 )	
+							{
+								/* TODO. */
+							}
+
+							/* Update. */
+							current_packs++;
+							current_appAddr 	 = APP_START_ADDRESS      + (current_packs * BYTES_PER_PACKS);
+							current_downloadAddr = DOWNLOAD_START_ADDRESS + (current_packs * BYTES_PER_PACKS);
+
+							if ( (current_packs == total_packs) && !remaining )
+							{
+								/* Firmware write complete. Advance to the next state. */
+								g_bootloaderState = BL_STATE_VERIFY_FW;
+								#if (USE_POWER_FAIL_RESUME)
+									LoadConf.state = BL_STATE_VERIFY_FW;
+									g_BootResume->Save(&LoadConf);
+								#endif 
+								continue;
+							}
+							else if ( (current_packs == total_packs) && remaining )
+							{
+								goto FLAG1;
+							}
+						}
+
+						printf("\nPacks: %d, downloadAddr: %x, appAddr: %x\n", current_packs, current_downloadAddr, current_appAddr);
 						resume_initialize = 1;		// 不可重入标志.
 					}
 				#endif 
@@ -130,10 +183,13 @@ int main( void )
 				if ( hReturn < 0 )
 				{
 					/* TODO. */
-					Cus_BootloaderHook_WriteFailed(APP_START_ADDRESS, hReturn);
+					Cus_BootloaderHook_WriteFailed(current_appAddr, hReturn);
 				}
+
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_PacksIncrease();		// 成功写入一页，BKP对应记录器++.
+					/* Pack written successfully. Update the record. */
+					LoadConf.packs++;
+					g_BootResume->Save(&LoadConf);
 				#endif 
 
 				/* ---------- 测试 ------------------- */
@@ -154,20 +210,9 @@ int main( void )
 				current_downloadAddr += BYTES_PER_PACKS;						// 偏移到下个待读取的页.
 				current_appAddr 	 += BYTES_PER_PACKS;					    // 偏移到下一个待写入的页.
 
+FLAG1:
 				if ( current_packs == total_packs )
 				{	
-					// 整数页已经写入完. 
-					if ( remaining == 0 )
-					{
-						// 无剩余不到一个页大小的数据.
-						g_bootloaderState = BL_STATE_VERIFY_FW;
-
-						#if (USE_POWER_FAIL_RESUME)
-							Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_VERIFY_FW);
-						#endif 
-						break;	
-					}
-
 					if ( remaining != 0 && remaining < BYTES_PER_PACKS )
 					{
 						// 剩余数据不足一页.
@@ -180,14 +225,18 @@ int main( void )
 						{
 							Cus_BootloaderHook_WriteFailed(current_appAddr, hReturn);
 						}
-
-						g_bootloaderState = BL_STATE_VERIFY_FW;
-
-						#if (USE_POWER_FAIL_RESUME)
-							Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_VERIFY_FW);
-						#endif 
-						break;
 					}
+
+					/* DOWNLOAD area fully written to APP. Update the state machine. */
+					g_bootloaderState = BL_STATE_VERIFY_FW;
+
+					#if (USE_POWER_FAIL_RESUME)
+						/* Save PowerResume Conf. */
+						LoadConf.state = BL_STATE_VERIFY_FW;
+						g_BootResume->Save(&LoadConf);
+					#endif 
+
+					break;	
 				}
 				continue;
 			}
@@ -206,7 +255,8 @@ int main( void )
 						is_Retry = true;
 
 						#if (USE_POWER_FAIL_RESUME)
-							Cus_Bootloader_PowerFailResume_ResetBKPField();		// Retry 前清除此前计数. 保证BKP记录与Bootloader一致.
+							/* Clear the previous counter before retry to keep the power-loss state consistent with the Bootloader. */
+							g_BootResume->Clear();
 						#endif 
 
 						g_bootloaderState = BL_STATE_ERASE_APP;		// Back to BL_STATE_ERASE_APP.
@@ -217,7 +267,6 @@ int main( void )
 						// 重试 3 次全部失败，触发 VerifyFailed Hook（默认软复位）.
 						Cus_BootloaderHook_VerifyFailed(APP_START_ADDRESS, writeSize);
 					}
-					for( ; ; );
 				}
 				
 				is_Retry = false;
@@ -225,8 +274,10 @@ int main( void )
 				g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
 
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_CLEAR_IAP_FLAG);
+					LoadConf.state = BL_STATE_CLEAR_IAP_FLAG;
+					g_BootResume->Save(&LoadConf);
 				#endif 
+
 				break;
 			}
 
@@ -243,9 +294,12 @@ int main( void )
 				}
 
 				g_bootloaderState = BL_STATE_JUMP_APP;
+
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_SaveStates(BL_STATE_JUMP_APP);
+					LoadConf.state = BL_STATE_JUMP_APP;
+					g_BootResume->Save(&LoadConf);
 				#endif 				
+
 				break;
 			}
 
@@ -282,7 +336,8 @@ int main( void )
 				}
 
 				#if (USE_POWER_FAIL_RESUME)
-					Cus_Bootloader_PowerFailResume_ResetBKPField();		// 最后跳转前彻底清除断电续传标志.
+					/* Clear the resume flag before the final jump to APP. */
+					g_BootResume->Clear();		
 				#endif 
 
 				SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.

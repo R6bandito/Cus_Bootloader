@@ -7,27 +7,31 @@
 #include "Bootloader_Utils.h"
 #include "crc32table.h"
 
+#if (USE_POWER_FAIL_RESUME)
+	#include "BootResume.h"
+#endif /* USE_POWER_FAIL_RESUME */
+
 
 typedef enum 
 {
-  BL_STATE_START = 0,
-  BL_STATE_CHECK_FLAG,
-  BL_STATE_VERIFY_CRC,
-  BL_STATE_ERASE_APP,
-  BL_STATE_WRITE_FW,
-  BL_STATE_VERIFY_FW,
-  BL_STATE_CLEAR_IAP_FLAG,
-  BL_STATE_JUMP_APP,
+	BL_STATE_START = 0,
+	BL_STATE_CHECK_FLAG,
+	BL_STATE_VERIFY_CRC,
+	BL_STATE_ERASE_APP,
+	BL_STATE_WRITE_FW,
+	BL_STATE_VERIFY_FW,
+	BL_STATE_CLEAR_IAP_FLAG,
+	BL_STATE_JUMP_APP,
 
 } BL_State_t;
 
 
 typedef struct Bootloader_info
 {
-  uint16_t magic_word;
-  uint16_t version;
-  uint32_t app_size;
-  uint32_t CRC32;
+	uint16_t magic_word;
+	uint16_t version;
+	uint32_t app_size;
+	uint32_t CRC32;
 
 } IAP_Info_t;
 
@@ -46,29 +50,6 @@ void Cus_Bootloader_FeedIWDG( void );
     void Cus_Bootloader_ClearBootCount( void );
     void Cus_Bootloader_JumpToRecoveryAPP( void );
   #endif // USE_RECOVERY_APP
-/* -------------------------------------------------------------------- */
-
-
-/* ---------------------- Options: POWER_FAIL_RESUME -------------------------- */
-  #if (USE_POWER_FAIL_RESUME)
-    /* 用于 断电续传 结构. (预留接口 待实现) */
-    typedef struct Bootloader_record
-    {
-      uint16_t record_magic;                // 数据有效性验证魔数.
-      BL_State_t record_state;              // 保存的升级阶段.
-      uint16_t record_packs;                // 当前已成功写入的页索引（0-based）.
-      uint8_t error_flag;                   // 错误警告标志位.
-
-    } Bootloader_record_t;
-
-    void Cus_Bootloader_PowerFailResume_RecordInit( void );
-    void Cus_Bootloader_PowerFailResume_PacksIncrease( void );
-    void Cus_Bootloader_PowerFailResume_SetError( void );
-    void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state );
-    uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void );
-    void Cus_Bootloader_PowerFailResume_ResetBKPField( void );
-    void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_packs, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr );
-  #endif // USE_POWER_FAIL_RESUME
 /* -------------------------------------------------------------------- */
 
 

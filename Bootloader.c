@@ -6,7 +6,7 @@
 volatile BL_State_t g_bootloaderState;
 
 #if (USE_POWER_FAIL_RESUME)
-	Bootloader_record_t recordStructure;
+	BootResume_Data_t LoadConf;
 #endif // USE_POWER_FAIL_RESUME
 
 /* ---------------------------------------------- */
@@ -42,10 +42,6 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 		#if (USE_RECOVERY_APP)
 			Cus_Bootloader_RecoveryInit();
 		#endif // USE_RECOVERY_APP
-
-		#if (USE_POWER_FAIL_RESUME)
-			Cus_Bootloader_PowerFailResume_RecordInit();
-		#endif // USE_POWER_FAIL_RESUME
 
 		Cus_Bootloader_FeedIWDG();
 	}
@@ -268,150 +264,6 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 	}
 
   #endif // USE_RECOVERY_APP
-/* ******************************************************************************************** */
-
-
-/* ****************************** Options: POWER_FAIL_RESUME ******************************************* */
-  #if (USE_POWER_FAIL_RESUME)
-
-	void Cus_Bootloader_PowerFailResume_RecordInit( void )
-	{
-		uint32_t rcc_temp = RCC->APB1ENR;
-		uint32_t pwr_temp = PWR->CR;
-		if ( (rcc_temp & (0x01UL << 27)) != 1 || (rcc_temp & (0x01UL << 28)) != 1 || (pwr_temp & (0x01UL << 8)) != 1 )
-		{
-			// BKP域未开启访问. 将其开启.
-			rcc_temp |= (0x01UL << 28);
-			rcc_temp |= (0x01UL << 27);
-			RCC->APB1ENR = rcc_temp;
-
-			pwr_temp |= (0x01UL << 8);
-			PWR->CR = pwr_temp;
-		}
-	}
-
-
-	void Cus_Bootloader_PowerFailResume_PacksIncrease( void )
-	{
-		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )   
-		{
-			// 第一次写入时再写入魔数.
-			*(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR = PWRFAIL_RESUME_BKP_MAGIC;  // 魔数写入.
-		}
-
-		uint16_t pages = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;
-		pages++;
-		*(volatile uint16_t *)RESUME_BKP_PAGE_ADDR = pages;
-		__DSB();
-
-		if ( *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR != pages )
-		{
-			// 写入后回读验证失败.(极小概率)
-			// 置错误位. 代表当前数据不可信.
-			Cus_Bootloader_PowerFailResume_SetError();
-		}
-	}
-
-
-	void Cus_Bootloader_PowerFailResume_SetError( void )
-	{
-		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    	
-			return;   // 魔数验证失败,空调用.
-
-		uint16_t error_bkp = RESUME_BKP_ERROR_FLAG_ADDR;
-		*(volatile uint16_t *)error_bkp = 0x01;   // 此处不验证，因为此前已处于异常路径.
-	}
-
-
-	void Cus_Bootloader_PowerFailResume_SaveStates( BL_State_t state )
-	{
-		*(volatile uint16_t *)RESUME_BKP_STATE_ADDR = (uint16_t)state;
-		__DSB();
-
-		if ( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR != (uint16_t)state )
-		{
-			Cus_Bootloader_PowerFailResume_SetError();
-		}
-	}
-
-    static inline BL_State_t Cus_Bootloader_PowerFailResume_ToBLState( uint16_t val ) 
-    {
-      return (val <= BL_STATE_JUMP_APP) ? (BL_State_t)val : BL_STATE_START;
-    }
-
-
-	uint8_t Cus_Bootloader_PowerFailResume_GetAllInfoFromBKPField( void )
-	{
-		if ( *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR != PWRFAIL_RESUME_BKP_MAGIC )    return 0;   // 魔数验证失败,空调用.
-
-		recordStructure.record_magic = *(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR;
-		recordStructure.record_packs = *(volatile uint16_t *)RESUME_BKP_PAGE_ADDR;;
-		recordStructure.error_flag = (uint8_t)(*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR & 0x01);
-
-		BL_State_t Cvstate = Cus_Bootloader_PowerFailResume_ToBLState( *(volatile uint16_t *)RESUME_BKP_STATE_ADDR );
-		recordStructure.record_state = Cvstate;
-
-		return 1;
-	}
-
-
-	void Cus_Bootloader_PowerFailResume_ResetBKPField( void )
-	{
-		*(volatile uint16_t *)RESUME_BKP_MAGIC_ADDR      = 0x00;
-		*(volatile uint16_t *)RESUME_BKP_STATE_ADDR      = 0x00;
-		*(volatile uint16_t *)RESUME_BKP_PAGE_ADDR       = 0x00;
-		*(volatile uint16_t *)RESUME_BKP_ERROR_FLAG_ADDR = 0x00;
-	}
-
-
-	void Cus_Bootloader_PowerFailResume_ReloadWriteParams( uint16_t *p_current_packs, uint32_t *p_current_downloadAddr, uint32_t *p_current_appAddr )
-	{
-		// 该方法只初始化一次. 不允许重入！（无论是正常上电还是断电续传）. 由上层保证.
-		if ( !p_current_appAddr || !p_current_downloadAddr || !p_current_packs )  return;
-
-		if ( recordStructure.record_magic != PWRFAIL_RESUME_BKP_MAGIC )   return; 
-
-		#if (PWRFAIL_CONF_IGNORE_ERROR) == 0
-			if ( recordStructure.error_flag != 0 )  return;
-		#endif 
-
-		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
-		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
-		if ( !isRead )
-		{
-			return;
-		}
-
-		IAP_Info_t *p_IAP_info = (IAP_Info_t *)buf;
-		if ( p_IAP_info->magic_word != IAP_MAGIC_WORD )   return;   // IAP信息有误.(意外擦除, 损毁). (一般不应发生这种情况，此处仅作保留)
-
-		*p_current_packs = recordStructure.record_packs;
-		*p_current_downloadAddr = DOWNLOAD_START_ADDRESS + (recordStructure.record_packs * BYTES_PER_PACKS);  // 按页进行偏移.
-		*p_current_appAddr = APP_START_ADDRESS + (recordStructure.record_packs * BYTES_PER_PACKS);
-
-		if ( *p_current_downloadAddr < DOWNLOAD_START_ADDRESS || *p_current_downloadAddr > DOWNLOAD_START_ADDRESS + DOWNLOAD_REGION_SIZE || 
-			*p_current_appAddr < APP_START_ADDRESS || *p_current_appAddr > APP_START_ADDRESS + APP_REGION_SIZE )
-		{
-			// 计算出来的位置错误？擦除整个已写APP. 降级为普通模式，从头开始擦写.
-			int hReturn = g_BootFlash->Erase(APP_START_ADDRESS, APP_REGION_SIZE);
-			Cus_Bootloader_FeedIWDG();
-
-			if ( hReturn < 0 )
-			{
-				Cus_BootloaderHook_EraseFailed(APP_START_ADDRESS, hReturn);
-				for( ; ; );
-			}
-
-			// 降级为默认配置.
-			*p_current_downloadAddr = DOWNLOAD_START_ADDRESS;
-			*p_current_appAddr = APP_START_ADDRESS;
-			*p_current_packs = 0;
-
-			Cus_Bootloader_PowerFailResume_ResetBKPField();   // 降级处理后清除BKP信息. 下次启动视为全新启动.
-		}
-	}
-
-  #endif // USE_POWER_FAIL_RESUME
 /* ******************************************************************************************** */
 
 
