@@ -59,7 +59,7 @@ int main( void )
 
 	// 固件更新信息.
 	IAP_Info_t iap_info;
-    g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, (uint8_t *)&iap_info, sizeof(iap_info));
+    g_BootFlash->ReadIAP((uint8_t *)&iap_info, sizeof(iap_info));
 	uint32_t writeSize = iap_info.app_size;
 	uint32_t total_packs = (writeSize / BYTES_PER_PACKS);
 	uint32_t remaining = (writeSize % BYTES_PER_PACKS);
@@ -285,11 +285,11 @@ FLAG1:
 			{
 				Cus_Bootloader_FeedIWDG();
 				
-				int eReturn = g_BootFlash->Erase(IAP_INFO_STRUCT_START_ADDR, sizeof(IAP_Info_t));
+				int eReturn = g_BootFlash->ClearIAP();
 				Cus_Bootloader_FeedIWDG();
 				if ( eReturn < 0 )
 				{
-					Cus_BootloaderHook_EraseFailed(IAP_INFO_STRUCT_START_ADDR, eReturn);
+					/* TODO. */
 					for( ; ; );
 				}
 

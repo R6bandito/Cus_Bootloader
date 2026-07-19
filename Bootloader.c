@@ -25,6 +25,8 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 	{
 		HAL_Init();
 
+		g_BootFlash->Init();
+
 		#if (USE_UTILS_SYSCONF)
 			Cus_Bootloader_Utils_SystemClockConfig();
 		#else
@@ -50,7 +52,7 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 	uint8_t Cus_Bootloader_CheckIAPRequest( void )
 	{
 		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
-		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
+		bool isRead = g_BootFlash->ReadIAP(buf, sizeof(buf));
 		if ( !isRead )
 		{
 			return 0;
@@ -70,12 +72,10 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 		if ( !CRC_CheckReturn )   
 		{
 			// CRC Verify Failed! Fireware not reliable.Discard this update required.
-			uint32_t eraseStartAddr = IAP_INFO_STRUCT_START_ADDR;
-			uint32_t eraseSize = sizeof(IAP_Info_t);
-			int hReturn = g_BootFlash->Erase(eraseStartAddr, eraseSize);
+			int hReturn = g_BootFlash->ClearIAP();
 			if ( hReturn < 0 )
 			{
-				Cus_BootloaderHook_EraseFailed( IAP_INFO_STRUCT_START_ADDR, hReturn );
+				/* TODO. */
 			}
 			return 0;
 		}
@@ -88,7 +88,7 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 	static uint8_t Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC )
 	{
 		uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
-		bool isRead = g_BootFlash->ReadIAP(IAP_INFO_STRUCT_START_ADDR, buf, sizeof(buf));
+		bool isRead = g_BootFlash->ReadIAP(buf, sizeof(buf));
 		if ( !isRead )
 		{
 			return 0;

@@ -6,6 +6,7 @@
 #include "BootFlashPort.h"
 #include "Bootloader_Utils.h"
 #include "crc32table.h"
+#include "IAP_Protocol.h"
 
 #if (USE_POWER_FAIL_RESUME)
 	#include "BootResume.h"
@@ -24,16 +25,6 @@ typedef enum
 	BL_STATE_JUMP_APP,
 
 } BL_State_t;
-
-
-typedef struct Bootloader_info
-{
-	uint16_t magic_word;
-	uint16_t version;
-	uint32_t app_size;
-	uint32_t CRC32;
-
-} IAP_Info_t;
 
 
 /* ---------------------------------------------------------- */

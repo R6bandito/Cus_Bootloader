@@ -7,7 +7,8 @@
 typedef int  (*BootFlash_InitFn)  ( void );
 typedef int  (*BootFlash_EraseFn) ( uint32_t addr, uint32_t size );
 typedef int  (*BootFlash_WriteFn) ( uint32_t addr, const uint8_t *data, uint32_t size );
-typedef bool (*BootFlash_ReadFn)  ( uint32_t addr, uint8_t *buf, uint32_t size );
+typedef bool (*BootFlash_ReadFn)  ( uint8_t *buf, uint32_t size );
+typedef bool (*BootFlash_ClearIAPFn)( void );  
 typedef bool (*BootFlash_VerifyFn)( uint32_t addr, const uint8_t *data, uint32_t size );
 
 
@@ -16,6 +17,7 @@ typedef struct {
     BootFlash_EraseFn  Erase;
     BootFlash_WriteFn  Write;
     BootFlash_ReadFn   ReadIAP;
+    BootFlash_ClearIAPFn  ClearIAP;
     BootFlash_VerifyFn Verify;
 
 } BootFlash_Ops_t;
