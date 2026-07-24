@@ -4,7 +4,7 @@
 
 
 /* ************************************************** */
-static int flashInit( void );
+int flashInit( void );
 static int flashErase( uint32_t addr, uint32_t size );
 static int flashWrite( uint32_t addr, const uint8_t *data, uint32_t size );
 static bool flashReadIAP( uint8_t *buf, uint32_t size );
@@ -18,8 +18,8 @@ static FlashMgr_Instance_t gs_Mgr_IAP;
 /* ************************************************** */
 
 /* ************************************************** */
-#define 	MANAGER_START_ADDR				(0x08008000UL)
-#define 	MANAGER_END_ADDR				(0x0800A000UL)
+#define 	MANAGER_START_ADDR				(0x08042000UL)
+#define 	MANAGER_END_ADDR				(0x08044000UL)
 /* ************************************************** */
 
 
@@ -31,7 +31,7 @@ static void err_handle( Cus_Flash_State_t Ret )
 
 
 
-static int 
+int 
 flashInit( void )
 {
 	Cus_Flash_CalibrateLatency();

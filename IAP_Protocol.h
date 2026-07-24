@@ -42,13 +42,13 @@ typedef struct Bootloader_info
 //   Total: 32+224+224+2 = 482KB (fit in 512KB, leaving some free space)
 /* -------------- Core Config & Define ------------------- */
 #define BOOTLOADER_START_ADDRESS          (0x08000000UL)
-#define BOOTLOADER_SIZE                   (0x00008000UL)    // 32KB
+#define BOOTLOADER_SIZE                   (0x00010000UL)    // 64KB
 
-#define APP_START_ADDRESS                 (0x08008000UL)
-#define APP_REGION_SIZE                   (0x00038000UL)    // 224KB
+#define APP_START_ADDRESS                 (0x08010000UL)
+#define APP_REGION_SIZE                   (0x00032000UL)    // 200KB
 
-#define DOWNLOAD_START_ADDRESS            (0x08040000UL)
-#define DOWNLOAD_REGION_SIZE              (0x00038000UL)    // 224KB
+#define DOWNLOAD_START_ADDRESS            (0x08044000UL)
+#define DOWNLOAD_REGION_SIZE              (0x00032000UL)    // 200KB
 /* 32 + 224 + 224 = 480 KB. */
 
 

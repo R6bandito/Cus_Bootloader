@@ -1,5 +1,6 @@
 #include "Bootloader.h"
-
+#include <stdio.h>
+#include "BootFlashPort_Template_kv.h"
 
 /* ------------------- g_ver --------------------- */
 
@@ -24,6 +25,8 @@ static uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len 
 	void Cus_Bootloader_Init( void )
 	{
 		HAL_Init();
+
+		bootloader_InstallCallbacks();
 
 		g_BootFlash->Init();
 

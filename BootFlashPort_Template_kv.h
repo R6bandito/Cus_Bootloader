@@ -9,6 +9,7 @@
 
 
 /* ************************************************** */
+int flashInit( void );
 bool writeIAP( IAP_Info_t iapReq );
 void bootloader_InstallCallbacks( void );
 /* ************************************************** */
