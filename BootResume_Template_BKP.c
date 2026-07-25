@@ -6,7 +6,10 @@ void Cus_Boot_RecordInit( void )
 {
     uint32_t rcc_temp = RCC->APB1ENR;
     uint32_t pwr_temp = PWR->CR;
-    if ( (rcc_temp & (0x01UL << 27)) != 1 || (rcc_temp & (0x01UL << 28)) != 1 || (pwr_temp & (0x01UL << 8)) != 1 )
+    /* Check whether BKP/PWR clock and DBP are already enabled.
+       Bitwise AND returns the masked bit value, not 0 or 1;
+       compare against 0 to test the bit. */
+    if ( !(rcc_temp & (0x01UL << 27)) || !(rcc_temp & (0x01UL << 28)) || !(pwr_temp & (0x01UL << 8)) )
     {
         // BKP域未开启访问. 将其开启.
         rcc_temp |= (0x01UL << 28);
@@ -58,3 +61,20 @@ bool Cus_Boot_Loadcb( BootResume_Data_t *data )
 }
 
 
+/*
+ * One‑shot entry point that initialises the BKP domain, assembles the
+ * ops table, and registers it with the BootResume subsystem.
+ * Call once during cold boot (before any Save/Load/Clear usage).
+ */
+void BootResume_bkp_Install( void )
+{
+    Cus_Boot_RecordInit();
+
+    static const BootResume_Ops_t ops = {
+        .Save  = Cus_Boot_Savecb,
+        .Load  = Cus_Boot_Loadcb,
+        .Clear = Cus_Boot_Clearcb,
+    };
+
+    BootResume_Register(&ops);
+}

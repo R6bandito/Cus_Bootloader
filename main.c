@@ -22,8 +22,6 @@ int main( void )
 
 	g_bootloaderState = BL_STATE_START;
 
-	HAL_Delay(500);
-
 	#if (USE_RECOVERY_APP)
 		uint32_t bootCount = Cus_Bootloader_GetBootCount();
 		if ( bootCount >= MAX_FAILED_COUNT )

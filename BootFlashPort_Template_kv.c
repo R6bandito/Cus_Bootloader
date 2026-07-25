@@ -125,7 +125,6 @@ flashReadIAP( uint8_t *buf, uint32_t size )
 	if ( hReturn != CUS_FLASH_OK )
 	{
 		/* No IAP record get. Return F. */
-		err_handle(hReturn);
 		return false;
 	}
 
