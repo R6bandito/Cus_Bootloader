@@ -4,9 +4,10 @@
 
 #include "BootloaderConf.h"
 #include "BootFlashPort.h"
-#include "Bootloader_Utils.h"
+#include "BootPlatform.h"
 #include "crc32table.h"
 #include "IAP_Protocol.h"
+
 
 #if (USE_POWER_FAIL_RESUME)
 	#include "BootResume.h"
@@ -16,11 +17,10 @@
 typedef enum 
 {
 	BL_STATE_START = 0,
-	BL_STATE_CHECK_FLAG,
-	BL_STATE_VERIFY_CRC,
 	BL_STATE_ERASE_APP,
 	BL_STATE_WRITE_FW,
 	BL_STATE_VERIFY_FW,
+	BL_STATE_VERIFY_AB,
 	BL_STATE_CLEAR_IAP_FLAG,
 	BL_STATE_JUMP_APP,
 
@@ -30,7 +30,41 @@ typedef enum
 /* ---------------------------------------------------------- */
 uint8_t Cus_Bootloader_CheckIAPRequest( void );
 void Cus_Bootloader_Init( void );
-void Cus_Bootloader_FeedIWDG( void );
+uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len );
+void Cus_Bootloader_InstallFunctions( void );
+
+
+/* ---------------------------------------------------------- */
+void BL_FeedDog( void );
+void BL_DelayMs( uint32_t ms );
+void BL_Log( const char *msg, uint32_t err_code );
+void BL_LogF( uint32_t err_code, const char *fmt, ... );
+
+
+/* ---------------------------------------------------------- */
+/*  BL_ASSERT(cond)                                            */
+/*  Runtime assertion for the Bootloader.                      */
+/*  When the condition fails:                                  */
+/*    - one log line is emitted BEFORE the hang (file and      */
+/*      condition in the message, line number as err_code),    */
+/*      only when USE_DEBUG is enabled and g_Platform->LogOut  */
+/*      is registered (BL_Log already performs both checks).   */
+/*    - the device then hangs in an infinite loop, feeding the */
+/*      watchdog every BL_ASSERT_FEED_INTERVAL_MS via          */
+/*      BL_FeedDog() / BL_DelayMs() when USE_DG is enabled     */
+/*      (both are no-ops otherwise).                           */
+/* ---------------------------------------------------------- */
+#define BL_ASSERT_FEED_INTERVAL_MS   (50UL)   /* must be far below the IWDG timeout */
+#define BL_ASSERT(cond) \
+    do { \
+        if ( !(cond) ) { \
+            BL_Log( "BL_ASSERT failed: " __FILE__ ": " #cond, __LINE__ ); \
+            while (1) { \
+                BL_FeedDog(); \
+                BL_DelayMs( BL_ASSERT_FEED_INTERVAL_MS ); \
+            } \
+        } \
+    } while (0)
 
 
 /* ---------------------- Options: Revocery -------------------------- */

@@ -1,4 +1,5 @@
 #include "main.h"
+#include "BootPlatform.h"
 
 
 /* ---------------------------------------------- */
@@ -6,19 +7,38 @@ uint8_t wBuf[BYTES_PER_PACKS];
 extern volatile BL_State_t g_bootloaderState;
 static bool is_Retry = false;
 
+/* Jump target: active slot in A/B mode; plain APP region in legacy mode. */
+static uint32_t gs_run_addr = APP_START_ADDRESS;
+
 #if (USE_POWER_FAIL_RESUME)
-  extern BootResume_Data_t LoadConf;
+	extern BootResume_Data_t LoadConf;
+	static uint8_t SavedSTA;
+	static uint8_t ResumeSaveErr;		/* Set once a Save fails: resume is no longer reliable. */
+
+	/* Wrapper for the power-fail resume record save.
+	   On the first failure: logs a WARN, clears the stored record so the
+	   next boot starts a full update, and disables all further saves for
+	   this run (prevents log flooding and repeated Flash writes). */
+	static void ResumeSave( void )
+	{
+		if ( ResumeSaveErr ) return;	/* Already disabled for this run. */
+
+		if ( !g_BootResume->Save( &LoadConf ) )
+		{
+			ResumeSaveErr = 1;
+			BL_Log( "[WARN] RESUME SAVE FAILED. RESUME DISABLED FOR THIS RUN.\n", 1 );
+			g_BootResume->Clear();
+		}
+	}
 #endif // USE_POWER_FAIL_RESUME
 /* ---------------------------------------------- */
 
 
 int main( void )
 {
+	BL_Log("============== Bootloader Running ==============", 0);
+
 	Cus_Bootloader_Init();
-
-	printf("Project Test OK!\nsystemCoreClock = :%u\n", SystemCoreClock);
-
-	printf(" ============== Bootloader Running ================= \n");
 
 	g_bootloaderState = BL_STATE_START;
 
@@ -37,68 +57,85 @@ int main( void )
 
 	uint8_t uReturn = Cus_Bootloader_CheckIAPRequest();
 	if ( !uReturn )		
-	{
-		// No need to update. Jump to the APP.
+		/* No need to update. Jump to the APP. */ 
 		g_bootloaderState = BL_STATE_JUMP_APP;
-	} 
 	else 
-	{
-		g_bootloaderState = BL_STATE_ERASE_APP;
-	}
+		#if (USE_AB_SLOT)
+			/* A/B: the firmware is already written to the target slot by
+			   the user side; verify it there, then flip. */
+			g_bootloaderState = BL_STATE_VERIFY_AB;
+		#else
+			g_bootloaderState = BL_STATE_ERASE_APP;
+		#endif
 
 	#if (USE_POWER_FAIL_RESUME)
-		bool isLoad = g_BootResume->Load(&LoadConf);
+		bool isLoad = g_BootResume->Load( &LoadConf );
 		if ( isLoad )
 		{
-			// 状态更新 + 跳转.
+			/* Restore the saved state and resume from there. */ 
 			g_bootloaderState = LoadConf.state;
+			SavedSTA = 1;
 		}
-	#endif // USE_POWER_FAIL_RESUME
+		else 
+		{
+			/* Saved states load error. POWER_FAIL_RESUME Not avaliable. */
+			BL_Log( "[WARN] RESUME LOAD FAILED. RESTART FULL UPDATE.\n", 1 );
+		}
+	#endif /* USE_POWER_FAIL_RESUME */ 
 
-	// 固件更新信息.
-	IAP_Info_t iap_info;
-    g_BootFlash->ReadIAP((uint8_t *)&iap_info, sizeof(iap_info));
-	uint32_t writeSize = iap_info.app_size;
-	uint32_t total_packs = (writeSize / BYTES_PER_PACKS);
-	uint32_t remaining = (writeSize % BYTES_PER_PACKS);
+	#if (USE_AB_SLOT)
+		SlotFlag_Rec_t current_slot;
+		if ( !g_BootFlash->ReadSlot( &current_slot ) )
+		{
+			current_slot.active = SLOT_FLAG_MAGIC_A;
+			current_slot.seq = 0;
+		}
+
+		gs_run_addr = (current_slot.active == SLOT_FLAG_MAGIC_A)
+					? APP_SLOT_A_START : APP_SLOT_B_START;
+	#endif /* USE_AB_SLOT */
+
+	#if (!USE_AB_SLOT)
+		/* Firmware update information. */ 
+		IAP_Info_t iap_info;
+		g_BootFlash->ReadIAP( (uint8_t *)&iap_info, sizeof(iap_info) );
+		uint32_t writeSize = iap_info.app_size;
+		uint32_t total_packs = (writeSize / BYTES_PER_PACKS);
+		uint32_t remaining = (writeSize % BYTES_PER_PACKS);
+	#endif 
 
 	while(1)
 	{
-		Cus_Bootloader_FeedIWDG();
-
 		switch (g_bootloaderState)
 		{
+			#if (!USE_AB_SLOT)
 			case BL_STATE_ERASE_APP:
 			{
 				#if (USE_POWER_FAIL_RESUME)
-					LoadConf.state = BL_STATE_ERASE_APP;			// 记录 BL_STATE_ERASE_APP 状态.
-					bool ldReturn = g_BootResume->Save(&LoadConf);
-					if ( !ldReturn )
-					{
-						/* Err. TODO, */
-					}
+					/* Record the BL_STATE_ERASE_APP state. */
+					LoadConf.state = BL_STATE_ERASE_APP;			
+					ResumeSave();
 				#endif 
 
-				int hReturn = g_BootFlash->Erase(APP_START_ADDRESS, APP_REGION_SIZE);
+				int hReturn = g_BootFlash->Erase( APP_START_ADDRESS, APP_REGION_SIZE );
 				if ( hReturn < 0 )
 				{
-					Cus_BootloaderHook_EraseFailed(APP_START_ADDRESS, hReturn);
+					Cus_BootloaderHook_EraseFailed( APP_START_ADDRESS, hReturn );
 					for( ; ; );
 				}
 				g_bootloaderState = BL_STATE_WRITE_FW;
 
 				#if (USE_POWER_FAIL_RESUME)
+					/* Record the BL_STATE_WRITE_FW state. */
 					LoadConf.state = BL_STATE_WRITE_FW;
-					ldReturn = g_BootResume->Save(&LoadConf);		// 记录 BL_STATE_WRITE_FW 状态.
-					if ( !ldReturn )
-					{
-						/* TODO. */
-					}
+					ResumeSave();
 				#endif 
 
 				break;
 			}
+			#endif /* USE_AB_SLOT */
 
+			#if (!USE_AB_SLOT)
 			case BL_STATE_WRITE_FW:
 			{
 				static uint16_t current_packs = 0;
@@ -107,7 +144,7 @@ int main( void )
 
 				#if (USE_POWER_FAIL_RESUME)
 					static uint8_t resume_initialize = 0;
-					if ( !resume_initialize )
+					if ( !resume_initialize && SavedSTA )
 					{
 						/* Get the stored status parameters. */
 						current_packs = LoadConf.packs;
@@ -151,7 +188,7 @@ int main( void )
 								g_bootloaderState = BL_STATE_VERIFY_FW;
 								#if (USE_POWER_FAIL_RESUME)
 									LoadConf.state = BL_STATE_VERIFY_FW;
-									g_BootResume->Save(&LoadConf);
+									ResumeSave();
 								#endif 
 								continue;
 							}
@@ -162,7 +199,11 @@ int main( void )
 						}
 
 						printf("\nPacks: %d, downloadAddr: %x, appAddr: %x\n", current_packs, current_downloadAddr, current_appAddr);
-						resume_initialize = 1;		// 不可重入标志.
+						resume_initialize = 1;		// Non-reentrant flag.
+					}
+					else 
+					{
+						resume_initialize = 1;
 					}
 				#endif 
 
@@ -173,55 +214,42 @@ int main( void )
 					current_appAddr = APP_START_ADDRESS;
 				}
 
-				memcpy(wBuf, (uint8_t *)current_downloadAddr, BYTES_PER_PACKS);
-				Cus_Bootloader_FeedIWDG();
+				memcpy( wBuf, (uint8_t *)current_downloadAddr, BYTES_PER_PACKS );
 
-				int hReturn = g_BootFlash->Write(current_appAddr, wBuf, BYTES_PER_PACKS);
-				Cus_Bootloader_FeedIWDG();
+				int hReturn = g_BootFlash->Write( current_appAddr, wBuf, BYTES_PER_PACKS );
 				if ( hReturn < 0 )
 				{
 					/* TODO. */
-					Cus_BootloaderHook_WriteFailed(current_appAddr, hReturn);
+					Cus_BootloaderHook_WriteFailed( current_appAddr, hReturn );
 				}
 
 				#if (USE_POWER_FAIL_RESUME)
 					/* Pack written successfully. Update the record. */
 					LoadConf.packs++;
-					g_BootResume->Save(&LoadConf);
+					ResumeSave();
 				#endif 
 
-				/* ---------- 测试 ------------------- */
-				#if (RELEASE) == 0
-					static uint8_t test = 0;
-					test++;
-					if ( (test == 3) && (*(volatile uint16_t *)(0x40006C28)) != 1 )
-					{
-						*(volatile uint16_t *)(0x40006C28) = 1;
-						printf("\nPOWER_FIAL_RESUME_START_IN_5_SEC.\n");
-						HAL_Delay(5000);
-						NVIC_SystemReset();
-					}
-				#endif 
-			/* ---------------------------------- */
-
+				/* Next packs. */
 				current_packs++;	
-				current_downloadAddr += BYTES_PER_PACKS;						// 偏移到下个待读取的页.
-				current_appAddr 	 += BYTES_PER_PACKS;					    // 偏移到下一个待写入的页.
+
+				/* Advance to the next pack to read. */
+				current_downloadAddr += BYTES_PER_PACKS;
+
+				/* Advance to the next pack to write. */
+				current_appAddr += BYTES_PER_PACKS;
 
 FLAG1:
 				if ( current_packs == total_packs )
 				{	
 					if ( remaining != 0 && remaining < BYTES_PER_PACKS )
 					{
-						// 剩余数据不足一页.
-						Cus_Bootloader_FeedIWDG();
-						memset(wBuf, 0, BYTES_PER_PACKS);
-						memcpy(wBuf, (uint8_t *)current_downloadAddr, remaining);
-						hReturn = g_BootFlash->Write(current_appAddr, wBuf, remaining);
-						Cus_Bootloader_FeedIWDG();
+						/* Remaining data is less than one pack. */ 
+						memset( wBuf, 0, BYTES_PER_PACKS );
+						memcpy( wBuf, (uint8_t *)current_downloadAddr, remaining );
+						hReturn = g_BootFlash->Write( current_appAddr, wBuf, remaining );
 						if ( hReturn < 0 )
 						{
-							Cus_BootloaderHook_WriteFailed(current_appAddr, hReturn);
+							Cus_BootloaderHook_WriteFailed( current_appAddr, hReturn );
 						}
 					}
 
@@ -231,22 +259,23 @@ FLAG1:
 					#if (USE_POWER_FAIL_RESUME)
 						/* Save PowerResume Conf. */
 						LoadConf.state = BL_STATE_VERIFY_FW;
-						g_BootResume->Save(&LoadConf);
+						ResumeSave();
 					#endif 
 
 					break;	
 				}
 				continue;
 			}
+			#endif /* USE_AB_SLOT */
 
+		#if (!USE_AB_SLOT)
 		case BL_STATE_VERIFY_FW:
 			{
 				static uint8_t retry_count = 0;
-				bool is_FW_VerifyOK = g_BootFlash->Verify(APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize);
-				Cus_Bootloader_FeedIWDG();
+				bool is_FW_VerifyOK = g_BootFlash->Verify( APP_START_ADDRESS, (uint8_t *)DOWNLOAD_START_ADDRESS, writeSize );
 				if ( !is_FW_VerifyOK )
 				{
-					// Frameware Verify Failed. Start Retry.
+					/* Frameware Verify Failed. Start Retry. */
 					retry_count++;
 					if ( retry_count <= 3 )
 					{
@@ -257,13 +286,14 @@ FLAG1:
 							g_BootResume->Clear();
 						#endif 
 
-						g_bootloaderState = BL_STATE_ERASE_APP;		// Back to BL_STATE_ERASE_APP.
+						/* Back to BL_STATE_ERASE_APP. */
+						g_bootloaderState = BL_STATE_ERASE_APP;		
 						break;
 					}
 					else 
 					{
-						// 重试 3 次全部失败，触发 VerifyFailed Hook（默认软复位）.
-						Cus_BootloaderHook_VerifyFailed(APP_START_ADDRESS, writeSize);
+						// All 3 retries failed. Trigger the VerifyFailed hook (default: soft reset).
+						Cus_BootloaderHook_VerifyFailed( APP_START_ADDRESS, writeSize );
 					}
 				}
 				
@@ -273,18 +303,67 @@ FLAG1:
 
 				#if (USE_POWER_FAIL_RESUME)
 					LoadConf.state = BL_STATE_CLEAR_IAP_FLAG;
-					g_BootResume->Save(&LoadConf);
+					ResumeSave();
 				#endif 
 
 				break;
 			}
+			#endif /* USE_AB_SLOT */
+
+		#if (USE_AB_SLOT)
+		case BL_STATE_VERIFY_AB:
+			{
+				/* Resolve the slot state once. */
+				SlotFlag_Rec_t cur;
+				if ( !g_BootFlash->ReadSlot( &cur ) )
+				{
+					cur.active = SLOT_FLAG_MAGIC_A;
+					cur.seq    = 0;
+				}
+				uint32_t target = (cur.active == SLOT_FLAG_MAGIC_A)
+								? APP_SLOT_B_START : APP_SLOT_A_START;
+
+				/* The IAP request carries the authoritative CRC. */
+				uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
+				g_BootFlash->ReadIAP( buf, sizeof(buf) );
+				IAP_Info_t *iap = (IAP_Info_t *)buf;
+
+				/* Re-compute CRC32 over the target slot and compare. */
+				uint32_t calc = Cus_Bootloader_CRC32Caculate( (uint8_t *)target, iap->app_size );
+				if ( calc != iap->CRC32 )
+				{
+					/* Verify failed: do NOT flip, keep the current slot. */
+					BL_Log( "[WARN] TARGET SLOT VERIFY FAILED. KEEP CURRENT.\n", 1 );
+					g_bootloaderState = BL_STATE_JUMP_APP;
+					break;
+				}
+
+				/* Verified: flip the slot flag, the target becomes active. */
+				SlotFlag_Rec_t next;
+				next.magic  = SLOT_REC_MAGIC;
+				next.active = (cur.active == SLOT_FLAG_MAGIC_A) ? SLOT_FLAG_MAGIC_B : SLOT_FLAG_MAGIC_A;
+				next.seq    = cur.seq + 1;
+				next.crc    = SlotFlag_RecCrc( &next );
+
+				if ( g_BootFlash->FlipSlot( &next ) )
+				{
+					gs_run_addr = (next.active == SLOT_FLAG_MAGIC_A)
+								? APP_SLOT_A_START : APP_SLOT_B_START;
+					g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
+				}
+				else
+				{
+					/* Flip failed: stay on the pre-flip slot. */
+					BL_Log( "[WARN] SLOT FLIP FAILED. STAY ON CURRENT SLOT.\n", 1 );
+					g_bootloaderState = BL_STATE_JUMP_APP;
+				}
+				break;
+			}
+		#endif /* USE_AB_SLOT */
 
 		case BL_STATE_CLEAR_IAP_FLAG:
 			{
-				Cus_Bootloader_FeedIWDG();
-				
 				int eReturn = g_BootFlash->ClearIAP();
-				Cus_Bootloader_FeedIWDG();
 				if ( eReturn < 0 )
 				{
 					/* TODO. */
@@ -295,7 +374,7 @@ FLAG1:
 
 				#if (USE_POWER_FAIL_RESUME)
 					LoadConf.state = BL_STATE_JUMP_APP;
-					g_BootResume->Save(&LoadConf);
+					ResumeSave();
 				#endif 				
 
 				break;
@@ -303,13 +382,12 @@ FLAG1:
 
 		case BL_STATE_JUMP_APP:
 			{
-				// Jump to APP.
-				Cus_Bootloader_FeedIWDG();
-
-				uint32_t msp = *(volatile uint32_t *)APP_START_ADDRESS;		// 读取栈顶地址.
+				/* Jump to APP. */
+				/* Read the stack top address. */
+				uint32_t msp = *(volatile uint32_t *)gs_run_addr;		
 				if ( msp < MCU_SRAM_BASE_ADDR || msp > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE) )
 				{
-					// 栈顶地址非法.
+					/* Invalid stack top address. */
 					#if (USE_RECOVERY_APP)
 						Cus_Bootloader_JumpToRecoveryAPP();	// 栈顶非法. 由于擦写和校验已成功，此处却栈顶出现问题. 极大可能DOWNLOAD区与APP区已经损毁. 开启USE_RECOVERY_APP功能的情况下直接跳转.
 					#else 
@@ -320,10 +398,10 @@ FLAG1:
 					for( ; ; );
 				}
 
-				uint32_t reset_vector = *(volatile uint32_t *)(APP_START_ADDRESS + 4);
-				if ( reset_vector < APP_START_ADDRESS || reset_vector > (APP_START_ADDRESS + APP_REGION_SIZE) )
+				uint32_t reset_vector = *(volatile uint32_t *)(gs_run_addr + 4);
+				if ( reset_vector < gs_run_addr || reset_vector > (gs_run_addr + APP_REGION_SIZE) )
 				{
-					// 复位向量地址非法.
+					/* Invalid reset vector address. */
 					#if (USE_RECOVERY_APP)
 						Cus_Bootloader_JumpToRecoveryAPP();
 					#else 
@@ -338,24 +416,28 @@ FLAG1:
 					g_BootResume->Clear();		
 				#endif 
 
-				SysTick->CTRL = 0;          // 跳转前彻底关闭 SysTick，防止中断残留.
-				SysTick->LOAD = 0;
-				SysTick->VAL  = 0;
-				
-				SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;		// 清除可能已经挂起的 SysTick 中断请求.
+				/* Platform pre-jump hook: shut down SysTick, clear pending
+				   interrupts, de-init peripherals, etc. Runs with interrupts
+				   still enabled so the implementation may use HAL_Delay. */
+				if ( g_Platform->PrepareJump )
+					g_Platform->PrepareJump();
 
 				__disable_irq();
-				HAL_DeInit();
-				SCB->VTOR = APP_START_ADDRESS;		// 设置中断向量表.
+
+				/* Relocate the vector table. */
+				SCB->VTOR = gs_run_addr;
 				__DSB();
-				__set_MSP(msp);							// 设置主堆栈.
+
+				/* Set the main stack pointer. */
+				__set_MSP(msp);
 
 				void (*app_entry)(void) = (void (*)(void))reset_vector;
 
+				/* Jump to APP. */
 				app_entry();
 
-				for( ; ; );			// 正常情况下. 程序不应该运行到这里.
-				break;
+				/* Normally the program should never reach here. */
+				BL_ASSERT( 0 );
 			}
 		
 		default:	break;

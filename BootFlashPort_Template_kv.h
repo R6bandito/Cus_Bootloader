@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "IAP_Protocol.h"
-#include "Cus_Flash.h"
 
 
 /* ************************************************** */

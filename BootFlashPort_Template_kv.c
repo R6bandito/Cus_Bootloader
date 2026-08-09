@@ -1,6 +1,6 @@
 #include "BootFlashPort_Template_kv.h"
 #include "BootFlashPort.h"
-
+#include "Cus_Flash.h"
 
 
 /* ************************************************** */
@@ -11,15 +11,29 @@ static bool flashReadIAP( uint8_t *buf, uint32_t size );
 static bool flashVerify( uint32_t addr, const uint8_t *data, uint32_t size );
 static bool flashClearIAP( void );
 
+#if (USE_AB_SLOT)
+	static bool flashReadSlot( SlotFlag_Rec_t *out );
+	static bool flashFlipSlot( const SlotFlag_Rec_t *rec );
+#endif /* USE_AB_SLOT */
+
 bool writeIAP( IAP_Info_t iapReq );
 void bootloader_InstallCallbacks( void );
 
 static FlashMgr_Instance_t gs_Mgr_IAP;
+
+#if (USE_AB_SLOT)
+	static FlashMgr_Instance_t gs_Mgr_Slot;
+#endif /* USE_AB_SLOT */
 /* ************************************************** */
 
 /* ************************************************** */
 #define 	MANAGER_START_ADDR				(0x08042000UL)
 #define 	MANAGER_END_ADDR				(0x08044000UL)
+
+#if (USE_AB_SLOT)
+#define 	SLOT_MGR_START_ADDR				(0x08077000UL)
+#define 	SLOT_MGR_END_ADDR				(0x08078000UL)
+#endif /* USE_AB_SLOT */
 /* ************************************************** */
 
 
@@ -30,18 +44,26 @@ static void err_handle( Cus_Flash_State_t Ret )
 }
 
 
-
 int 
 flashInit( void )
 {
 	Cus_Flash_CalibrateLatency();
 
-	Cus_Flash_State_t hReturn = Cus_FlashMgr_Init(&gs_Mgr_IAP, MANAGER_START_ADDR, MANAGER_END_ADDR);
+	Cus_Flash_State_t hReturn = Cus_FlashMgr_Init( &gs_Mgr_IAP, MANAGER_START_ADDR, MANAGER_END_ADDR );
 	if ( hReturn != CUS_FLASH_OK )
 	{
 		err_handle( hReturn );
 		return -1;
 	}
+
+	#if (USE_AB_SLOT)
+		hReturn = Cus_FlashMgr_Init( &gs_Mgr_Slot, SLOT_MGR_START_ADDR, SLOT_MGR_END_ADDR );
+		if ( hReturn != CUS_FLASH_OK )
+		{
+			err_handle( hReturn );
+			return -1;
+		}
+	#endif /* USE_AB_SLOT */
 
 	/* This implementation assumes the default DWT timer. */
 	/* If you have overridden the timebase API externally, you may comment out this line. */
@@ -207,11 +229,82 @@ writeIAP( IAP_Info_t iapReq )
 }
 
 
+#if (USE_AB_SLOT)
+
+	/* Compact keep-callback: keep only the SLOT record whose seq
+	   matches the value passed via @c ctx (the previous newest). */
+	static bool 
+	KeepCB( const FlashMgr_Record_t *record, void *ctx )
+	{
+		uint32_t keep_seq = *(uint32_t *)ctx;
+
+		if ( memcmp( record->msgDetail, "SLOT", sizeof("SLOT") ) != 0 )
+			return false;
+
+		if ( record->msgSize < sizeof(SlotFlag_Rec_t) )
+			return false;
+
+		const SlotFlag_Rec_t *r = (const SlotFlag_Rec_t *)record->msgStartAddr;
+		return ( r->seq == keep_seq );
+	}
+
+
+	/* Read the latest valid SLOT record (Manager lookup + validation). */
+	static bool 
+	flashReadSlot( SlotFlag_Rec_t *out )
+	{
+		if ( !out )
+			return false;
+
+		Cus_Flash_desc_t d;
+		Cus_Flash_State_t hReturn = Cus_FlashMgr_GetRecordByDesc( &gs_Mgr_Slot, "SLOT", &d );
+		if ( hReturn != CUS_FLASH_OK )
+			return false;
+
+		const SlotFlag_Rec_t *r = (const SlotFlag_Rec_t *)d.dataStartAddr;
+		if ( r->magic != SLOT_REC_MAGIC )
+			return false;
+
+		if ( SlotFlag_RecCrc( r ) != r->crc )
+			return false;
+
+		*out = *r;
+		return true;
+	}
+
+	
+	/* Persist one pre-built SLOT record; compact when the area is full. */
+	static bool 
+	flashFlipSlot( const SlotFlag_Rec_t *rec )
+	{
+		if ( !rec )
+			return false;
+
+		uint32_t free = 0;
+		Cus_FlashMgr_GetFreeSpace( &gs_Mgr_Slot, &free );
+		if ( free < sizeof(*rec) )
+		{
+			/* Area full: compact, keeping only the previous newest record. */
+			uint32_t keep_seq = rec->seq - 1;
+			static uint8_t backBuf[128];
+			Cus_FlashMgr_Compact( &gs_Mgr_Slot, KeepCB, &keep_seq, backBuf, sizeof(backBuf) );
+		}
+
+		Cus_FlashMgr_Req_t req;
+		req.DataBuff = (uint8_t *)rec;
+		req.DataSize = sizeof(*rec);
+		req.DataType = 0x01;
+		memcpy( req.DataDesc, "SLOT", sizeof("SLOT") );
+		return ( Cus_FlashMgr_Append( &gs_Mgr_Slot, &req ) == CUS_FLASH_OK );
+	}
+
+#endif /* USE_AB_SLOT */
+
 
 void 
 bootloader_InstallCallbacks( void )
 {
-	BootFlash_Ops_t Ops;
+	BootFlash_Ops_t Ops = { 0 };
 	Ops.ClearIAP 	= flashClearIAP;
 	Ops.Erase 		= flashErase;
 	Ops.Init 		= flashInit;
@@ -219,9 +312,13 @@ bootloader_InstallCallbacks( void )
 	Ops.Verify 		= flashVerify;
 	Ops.Write 		= flashWrite;
 
+	#if (USE_AB_SLOT)
+		Ops.ReadSlot = flashReadSlot;
+		Ops.FlipSlot = flashFlipSlot;
+	#endif 
+
 	BootFlash_Register(&Ops);
 }
-
 
 
 
