@@ -9,6 +9,7 @@ static bool is_Retry = false;
 
 /* Jump target: active slot in A/B mode; plain APP region in legacy mode. */
 static uint32_t gs_run_addr = APP_START_ADDRESS;
+static uint32_t gs_size = APP_REGION_SIZE;
 
 #if (USE_POWER_FAIL_RESUME)
 	extern BootResume_Data_t LoadConf;
@@ -40,20 +41,23 @@ int main( void )
 
 	Cus_Bootloader_Init();
 
-	g_bootloaderState = BL_STATE_START;
-
-	#if (USE_RECOVERY_APP)
-		uint32_t bootCount = Cus_Bootloader_GetBootCount();
-		if ( bootCount >= MAX_FAILED_COUNT )
+	#if (USE_DFU_APP)
+		/* User-defined DFU trigger: return true to jump into the DFU APP
+		   (user's minimal transport layer for firmware download).
+		   If the DFU APP is not programmed / corrupt, JumpToDFUAPP
+		   returns false and the normal startup flow continues. */
+		BL_ErrCode_t err = 0;
+		if ( g_Platform->CheckDFU && g_Platform->CheckDFU() )
 		{
-			// 连续重启超过阈值，APP 反复崩溃，且DOWNLOAD区可能已损坏.放弃主流程，直接进恢复区.
-			Cus_Bootloader_ClearBootCount();
-			Cus_Bootloader_JumpToRecoveryAPP();
-			for( ; ; );			// 兜底. 程序不应该执行到这里.
+			if ( !Cus_Bootloader_JumpToDFUAPP( &err ) )
+			{
+				/* DFU enter false.  */
+				Cus_BootloaderHook_DFUEnterFailed( BL_STATE_START, (uint32_t)err );
+			}
 		}
+	#endif /* USE_DFU_APP */
 
-		Cus_Bootloader_IncreaseBootCount();		// 本次启动计数 + 1.(请在APP成功跳转后进行清除)
-	#endif // USE_RECOVERY_APP
+	g_bootloaderState = BL_STATE_START;
 
 	uint8_t uReturn = Cus_Bootloader_CheckIAPRequest();
 	if ( !uReturn )		
@@ -91,8 +95,7 @@ int main( void )
 			current_slot.seq = 0;
 		}
 
-		gs_run_addr = (current_slot.active == SLOT_FLAG_MAGIC_A)
-					? APP_SLOT_A_START : APP_SLOT_B_START;
+		gs_run_addr = BootSlot_MagicToAddr( current_slot.active );
 	#endif /* USE_AB_SLOT */
 
 	#if (!USE_AB_SLOT)
@@ -327,6 +330,7 @@ FLAG1:
 				uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
 				g_BootFlash->ReadIAP( buf, sizeof(buf) );
 				IAP_Info_t *iap = (IAP_Info_t *)buf;
+				gs_size = iap->app_size;
 
 				/* Re-compute CRC32 over the target slot and compare. */
 				uint32_t calc = Cus_Bootloader_CRC32Caculate( (uint8_t *)target, iap->app_size );
@@ -334,9 +338,11 @@ FLAG1:
 				{
 					/* Verify failed: do NOT flip, keep the current slot. */
 					BL_Log( "[WARN] TARGET SLOT VERIFY FAILED. KEEP CURRENT.\n", 1 );
-					g_bootloaderState = BL_STATE_JUMP_APP;
+					g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
 					break;
 				}
+
+				BL_Log( "[INFO] FIRMWARE VERIFY PASS.\n", 0 );
 
 				/* Verified: flip the slot flag, the target becomes active. */
 				SlotFlag_Rec_t next;
@@ -347,14 +353,13 @@ FLAG1:
 
 				if ( g_BootFlash->FlipSlot( &next ) )
 				{
-					gs_run_addr = (next.active == SLOT_FLAG_MAGIC_A)
-								? APP_SLOT_A_START : APP_SLOT_B_START;
+					gs_run_addr = BootSlot_MagicToAddr( next.active );
 					g_bootloaderState = BL_STATE_CLEAR_IAP_FLAG;
 				}
 				else
 				{
 					/* Flip failed: stay on the pre-flip slot. */
-					BL_Log( "[WARN] SLOT FLIP FAILED. STAY ON CURRENT SLOT.\n", 1 );
+					BL_Log( "[WARN] SLOT FLIP FAILED. STAY ON CURRENT PARTITION. RETRY ON NEXT BOOT\n", 1 );
 					g_bootloaderState = BL_STATE_JUMP_APP;
 				}
 				break;
@@ -366,8 +371,7 @@ FLAG1:
 				int eReturn = g_BootFlash->ClearIAP();
 				if ( eReturn < 0 )
 				{
-					/* TODO. */
-					for( ; ; );
+					BL_Log( "[WARN] IAP REQUEST CLEAR FAILED. WILL RETRY ON NEXT BOOT.\n", 1 );
 				}
 
 				g_bootloaderState = BL_STATE_JUMP_APP;
@@ -385,30 +389,67 @@ FLAG1:
 				/* Jump to APP. */
 				/* Read the stack top address. */
 				uint32_t msp = *(volatile uint32_t *)gs_run_addr;		
-				if ( msp < MCU_SRAM_BASE_ADDR || msp > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE) )
+				uint32_t reset_vector = *(volatile uint32_t *)(gs_run_addr + 4);
+
+				if ( msp < MCU_SRAM_BASE_ADDR || msp > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE)
+						|| reset_vector < gs_run_addr || reset_vector > gs_run_addr + gs_size )
 				{
 					/* Invalid stack top address. */
-					#if (USE_RECOVERY_APP)
-						Cus_Bootloader_JumpToRecoveryAPP();	// 栈顶非法. 由于擦写和校验已成功，此处却栈顶出现问题. 极大可能DOWNLOAD区与APP区已经损毁. 开启USE_RECOVERY_APP功能的情况下直接跳转.
-					#else 
-						// 不启用恢复区，走通用错误 Hook（默认软复位）.
-						Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_STACKTOPADDR);
-					#endif // USE_RECOVERY_APP
+					#if (USE_AB_SLOT)
+						/* Back to the other slot when the run slot is not executable. */
+						SlotFlag_Rec_t cur;
+						if ( !g_BootFlash->ReadSlot( &cur ) )
+						{
+							BL_Log( "[ERROR] STACK ADDR ERR AND BACK TO OTHER ERROR.\n", 2 );
+							BL_ASSERT( 0 );
+						}
 
-					for( ; ; );
-				}
+						uint32_t otherAddr = (cur.active == SLOT_FLAG_MAGIC_A) ? APP_SLOT_B_START : APP_SLOT_A_START;
+						uint32_t otherMSP = *(volatile uint32_t *)otherAddr;
+						uint32_t otherVEC = *(volatile uint32_t *)(otherAddr + 4);
 
-				uint32_t reset_vector = *(volatile uint32_t *)(gs_run_addr + 4);
-				if ( reset_vector < gs_run_addr || reset_vector > (gs_run_addr + APP_REGION_SIZE) )
-				{
-					/* Invalid reset vector address. */
-					#if (USE_RECOVERY_APP)
-						Cus_Bootloader_JumpToRecoveryAPP();
-					#else 
-						Cus_BootloaderHook_GenericError(BL_STATE_JUMP_APP, IAP_ERRCODE_INVALID_RESETHANDLER);
-					#endif // USE_RECOVERY_APP
+						/* Validate the other slot's vector table before committing. */
+						if ( otherMSP < MCU_SRAM_BASE_ADDR || otherMSP > (MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE)
+								||  otherVEC  < otherAddr || otherVEC  > (otherAddr + APP_REGION_SIZE) )
+						{
+							BL_Log( "[ERROR] OTHER PARTITION STACK ALSO ERROR.\n", 2 );
+							BL_ASSERT( 0 );
+						}
 
-					for( ; ; );
+						/* Flip the flag back to the other slot. */
+						SlotFlag_Rec_t next;
+						next.active = (cur.active == SLOT_FLAG_MAGIC_A) ? SLOT_FLAG_MAGIC_B : SLOT_FLAG_MAGIC_A;
+						next.magic = SLOT_REC_MAGIC;
+						next.seq = (cur.seq + 1);
+						next.crc = SlotFlag_RecCrc( &next );
+						if ( !g_BootFlash->FlipSlot( &next ) )
+						{
+							/* Flip Err? */
+							BL_Log( "[ERROR] OTHER PARTITION FLIP ERROR.\n", 2 );
+							BL_ASSERT( 0 );
+						}
+
+						gs_run_addr = otherAddr;
+
+						/* Reload the stack top for the rolled-back slot (the
+						   old msp still holds the invalid value). */
+						msp = otherMSP;
+						reset_vector = otherVEC;
+
+						/* End this update attempt: the IAP request is stale
+						   now (the new firmware is not executable), otherwise
+						   the next boot would re-verify / re-flip / re-fail. */
+						g_BootFlash->ClearIAP();
+
+						/* Rollback OK: gs_run_addr / msp / reset_vector are
+						   updated -- continue to the jump sequence below. */
+					#else /* !USE_AB_SLOT */
+						/* Single-slot fallback: the firmware itself has a bad
+						   vector table (verify passed, so this is a FW config
+						   error, not a transfer fault). */
+						BL_Log( "[ERROR] FIRMWARE STACK TOP OR VECTOR INVALID (FW CONFIG ERROR).\n", 1 );
+						BL_ASSERT( 0 );
+					#endif /* USE_AB_SLOT */
 				}
 
 				#if (USE_POWER_FAIL_RESUME)
@@ -422,14 +463,38 @@ FLAG1:
 				if ( g_Platform->PrepareJump )
 					g_Platform->PrepareJump();
 
-				__disable_irq();
+				{
+					/* ==========================================================
+					* ARCHITECTURE-SPECIFIC JUMP SEQUENCE
+					* ----------------------------------------------------------
+					* This block is the core of the application jump and is tied
+					* to the Cortex-M architecture:
+					*   1. __disable_irq()  -- stop interrupts during the switch.
+					*   2. SCB->VTOR        -- relocate the vector table to the
+					*                          target image. NOTE: Cortex-M0/M0+
+					*                          have NO VTOR (the vector table is
+					*                          fixed at 0x00000000); those targets
+					*                          must be linked there or use a RAM
+					*                          remap instead.
+					*   3. __DSB()          -- make the VTOR write effective
+					*                          before any exception can fire.
+					*   4. __set_MSP(msp)   -- load the target image's initial
+					*                          stack pointer (Cortex-M only).
+					* The actual jump (app_entry()) then calls the target's
+					* reset vector. When porting to another architecture
+					* (RISC-V, ARM7, ...), this whole block must be re-implemented
+					* according to the target's boot convention; keep it isolated
+					* here on purpose.
+					* ========================================================== */
+					__disable_irq();
 
-				/* Relocate the vector table. */
-				SCB->VTOR = gs_run_addr;
-				__DSB();
-
-				/* Set the main stack pointer. */
-				__set_MSP(msp);
+					/* Relocate the vector table. */
+					SCB->VTOR = gs_run_addr;
+					__DSB();
+	
+					/* Set the main stack pointer. */
+					__set_MSP(msp);
+				}
 
 				void (*app_entry)(void) = (void (*)(void))reset_vector;
 

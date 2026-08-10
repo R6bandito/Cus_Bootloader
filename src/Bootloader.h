@@ -27,6 +27,15 @@ typedef enum
 } BL_State_t;
 
 
+/* Bootloader error codes, passed to the hooks as error_code / errcode. */
+typedef enum
+{
+	IAP_ERRCODE_INVALID_STACKTOPADDR = 0x01UL,
+	IAP_ERRCODE_INVALID_RESETHANDLER = 0x02UL,
+	
+} BL_ErrCode_t;
+
+
 /* ---------------------------------------------------------- */
 uint8_t Cus_Bootloader_CheckIAPRequest( void );
 void Cus_Bootloader_Init( void );
@@ -67,14 +76,13 @@ void BL_LogF( uint32_t err_code, const char *fmt, ... );
     } while (0)
 
 
-/* ---------------------- Options: Revocery -------------------------- */
-  #if (USE_RECOVERY_APP)
-    void Cus_Bootloader_RecoveryInit( void );
-    uint32_t Cus_Bootloader_GetBootCount( void );
-    void Cus_Bootloader_IncreaseBootCount( void );
-    void Cus_Bootloader_ClearBootCount( void );
-    void Cus_Bootloader_JumpToRecoveryAPP( void );
-  #endif // USE_RECOVERY_APP
+/* ---------------------- Options: DFU -------------------------- */
+  #if (USE_DFU_APP)
+    /* Try to jump into the DFU APP. Returns false when the DFU APP is
+       not programmed / corrupt -- the caller falls back to the normal
+       flow. Never returns on success. */
+    bool Cus_Bootloader_JumpToDFUAPP( BL_ErrCode_t *eCode );
+  #endif // USE_DFU_APP
 /* -------------------------------------------------------------------- */
 
 
@@ -89,6 +97,14 @@ __weak void Cus_BootloaderHook_VerifyFailed(uint32_t region_start, uint32_t size
 
 // 通用错误 Hook（state：当前状态，error_code：自定义错误码）
 __weak void Cus_BootloaderHook_GenericError(BL_State_t state, uint32_t error_code);
+
+/* Called when the DFU APP is unavailable (not programmed / corrupt)
+   while the run slot is also invalid (stack top / reset vector check
+   failed). Non-blocking: the core halts AFTER this hook returns.
+   User may redefine for indicator / log / soft reset.
+   @param state:  the BL_State_t that detected the failure.
+   @param errcode: the BL_ErrCode_t that triggered the DFU attempt. */
+__weak void Cus_BootloaderHook_DFUEnterFailed( BL_State_t state, uint32_t errcode );
 /* ---------------------------------------------------------- */
 
 

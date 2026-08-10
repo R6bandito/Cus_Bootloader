@@ -9,7 +9,7 @@
 
 
 /* ******************************************************** */
-#define RESUME_BKP_MAGIC_ADDR           (BKP_BASE + 0x0C)   // BKP register offset (first two used by Recovery APP).
+#define RESUME_BKP_MAGIC_ADDR           (BKP_BASE + 0x0C)   // BKP register offset (first two used by DFU APP).
 #define RESUME_BKP_STATE_ADDR           (BKP_BASE + 0x10)   
 #define RESUME_BKP_PACK_ADDR            (BKP_BASE + 0x14)
 

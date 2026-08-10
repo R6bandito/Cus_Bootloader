@@ -22,6 +22,7 @@
 #define __BOOT_PLATFORM_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "BootloaderConf.h"
 
 
@@ -31,6 +32,7 @@ typedef void (*BootPlatform_PrepareJumpFn)( void );
 typedef void (*BootPlatform_FeedDGFn)( void );
 typedef void (*BootPlatform_DelayMsFn)( uint32_t ms );
 typedef void (*BootPlatform_DebugFn)( const char *msg, uint32_t err_code );
+typedef bool (*BootPlatform_DFUTriggerFn)( void );
 
 
 /*
@@ -89,6 +91,17 @@ typedef struct
      */
     BootPlatform_DelayMsFn      DelayMs;
 
+    /**
+     * OPTIONAL: may be NULL.
+     * User-implemented DFU (Device Firmware Update) trigger. Called once
+     * by the core early in the startup sequence; return true to jump
+     * into the DFU APP (the user's minimal transport layer for firmware
+     * download). The user decides the trigger source (GPIO level,
+     * external signal, communication state, ...) -- the core stays
+     * platform-free.
+     */
+    BootPlatform_DFUTriggerFn   CheckDFU;
+
 } BootPlatform_Ops_t;
 
 
@@ -99,3 +112,4 @@ extern const BootPlatform_Ops_t *g_Platform;
 void BootPlatform_Register( const BootPlatform_Ops_t *ops );
 
 #endif /* __BOOT_PLATFORM_H__ */
+

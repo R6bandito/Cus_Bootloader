@@ -77,10 +77,16 @@ Cus_Bootloader_Init( void )
 	/* User installation point: device environment & flash backend MUST be registered here. */
 	Cus_Bootloader_InstallFunctions();
 
-	/* These port is necessary. */
+	/* Mandatory ports: the core calls these unconditionally. */
 	BL_ASSERT( g_Platform->DelayMs && g_Platform->Init );
 	BL_ASSERT( g_BootFlash->ReadIAP && g_BootFlash->Verify && g_BootFlash->Write
 					 && g_BootFlash->Erase && g_BootFlash->ClearIAP );
+
+	#if (USE_AB_SLOT)
+		/* A/B mode: the slot-flag backend is called unconditionally
+		   (startup slot resolution / VERIFY_AB) -- must be registered. */
+		BL_ASSERT( g_BootFlash->ReadSlot && g_BootFlash->FlipSlot );
+	#endif /* USE_AB_SLOT */
 
 	#if (USE_POWER_FAIL_RESUME)
 		BL_ASSERT( g_BootResume->Load && g_BootResume->Clear && g_BootResume->Save );
@@ -93,10 +99,6 @@ Cus_Bootloader_Init( void )
 	{
 		g_BootFlash->Init();
 	}
-
-	#if (USE_RECOVERY_APP)
-		Cus_Bootloader_RecoveryInit();
-	#endif // USE_RECOVERY_APP
 
 	BL_Log( "[INFO] BOOT INIT PASS.\n", 0 );
 }
@@ -189,107 +191,31 @@ Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len )
 }
 
 
-/* ****************************** Options: Revocery ******************************************* */
-  #if (USE_RECOVERY_APP)
+/* ****************************** Options: DFU ******************************************* */
+  #if (USE_DFU_APP)
 
-	void Cus_Bootloader_RecoveryInit( void )
+	/* Jump into the DFU APP (user's minimal transport layer) for firmware
+	   download. Kept separate from the main jump logic on purpose.
+	   @return true when the DFU APP was entered (the function never
+	   returns on success); false when the DFU APP is not programmed or
+	   corrupt -- the caller then falls back to the normal flow. */
+	bool 
+	Cus_Bootloader_JumpToDFUAPP( BL_ErrCode_t *eCode )
 	{
-		// 解除 BKP 寄存器写保护.
-		uint32_t rcc_temp = RCC->APB1ENR;
-		rcc_temp |= (0x01UL << 28);         // PWREN 置 1.
-		rcc_temp |= (0x01UL << 27);         // BKPEN 置 1.
-		RCC->APB1ENR = rcc_temp;
-
-		uint32_t pwr_temp = PWR->CR;
-		pwr_temp |= (0x01UL << 8);          // DBP 置 1.
-		PWR->CR = pwr_temp;
-	}
-
-
-	uint32_t Cus_Bootloader_GetBootCount( void )
-	{
-		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-
-		// 魔数不匹配 = 首次上电或掉电过，计数归零
-		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  return 0;  // 魔数校验失败.返回 0 表示正常启动
-
-		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);        // 第二个 BKP 寄存器.
-		return *(volatile uint32_t *)bkp_2registerAddr;
-	}
-
-
-	void Cus_Bootloader_IncreaseBootCount( void )
-	{
-		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC )  
+		uint32_t dfu_msp = *(volatile uint32_t *)DFU_APP_START_ADDR;    /* Read the stack top. */
+		if ( dfu_msp < MCU_SRAM_BASE_ADDR || dfu_msp > MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE )
 		{
-			// 首次写入时，写入魔数验证码进行初始化.
-			uint32_t *bkp_1registerpAddr = (volatile uint32_t *)(RECOVERY_BKP_ADDR + 0x00UL);  // 首个BKP寄存器.
-			*bkp_1registerpAddr = RECOVERY_BKP_MAGIC;
+			/* DFU APP not programmed or corrupt: report and fall back,
+			   the caller decides what to run next. */
+			BL_Log( "[WARN] DFU APP INVALID (STACK TOP). FALL BACK.\n", 1 );
+			return false;
 		}
 
-		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
-		*(volatile uint32_t *)bkp_2registerAddr += 1;
-	}
-
-
-	void Cus_Bootloader_ClearBootCount( void )
-	{
-		uint32_t bkp_1registerAddr = RECOVERY_BKP_ADDR;
-		if ( *(volatile uint32_t *)bkp_1registerAddr != RECOVERY_BKP_MAGIC  )   return;
-
-		*(volatile uint32_t *)bkp_1registerAddr = 0x00;   // 清除魔数.
-
-		uint32_t bkp_2registerAddr = (RECOVERY_BKP_ADDR + 0x04UL);
-		*(volatile uint32_t *)bkp_2registerAddr = 0x00;   // 清除数据.
-	}
-
-
-	void Cus_Bootloader_JumpToRecoveryAPP( void )     // 此处为便于独立逻辑，并未将其与main中的Jump逻辑进行整合合并为统一接口.
-	{
-		uint32_t recovery_msp = *(volatile uint32_t *)RECOVERY_APP_START_ADDR;    // 读取栈顶.
-		if ( recovery_msp < MCU_SRAM_BASE_ADDR || recovery_msp > MCU_SRAM_BASE_ADDR + MCU_SRAM_SIZE )
+		uint32_t dfu_reset_vector = *(volatile uint32_t *)(DFU_APP_START_ADDR + 0x04UL);    /* Read the reset vector. */
+		if ( dfu_reset_vector < DFU_APP_START_ADDR || dfu_reset_vector > DFU_APP_START_ADDR + DFU_APP_REGION_SIZE )
 		{
-			// 最后恢复区APP栈顶地址非法.说明该区域从未被烧录或已损坏.
-			// 此时三层固件（APP、DOWNLOAD、RECOVERY）全部失效.
-			// 打印最后的诊断信息.
-			#if (USE_UTILS_DEBUG)
-				printf("========================================\n");
-				printf("\n=== FATAL: ALL FIRMWARE CORRUPTED ===\n");
-				printf("Recovery APP stack top: 0x%08X (invalid)\n", recovery_msp);
-				printf("Device halted. Re-program required.\n");
-				printf("========================================\n");
-			#endif
-
-			for( ; ; )    // 死循环兜底.
-			{
-				#if (USE_IWDG)
-				HAL_Delay(5);   
-				#endif // USE_IWDG
-			}   
-		}
-
-		uint32_t recovery_reset_vector = *(volatile uint32_t *)(RECOVERY_APP_START_ADDR + 0x04UL);    // 取出复位向量.
-		if ( recovery_reset_vector < RECOVERY_APP_START_ADDR || recovery_reset_vector > RECOVERY_APP_START_ADDR + RECOVERY_APP_REGION_SIZE )
-		{
-			#if (USE_UTILS_DEBUG)
-				printf("========================================\n");
-				printf(" \nFATAL ERROR: ALL FIRMWARE CORRUPTED\n");
-				printf("Bootloader: OK (0x%08X)\n", BOOTLOADER_START_ADDRESS);
-				printf("APP:        CORRUPTED\n");
-				printf("Download:   CORRUPTED or EMPTY\n");
-				printf("Recovery:   CORRUPTED or NOT PROGRAMMED\n");
-				printf("Recovery reset vector: 0x%08X (invalid)\n", recovery_reset_vector);
-				printf("\nDevice halted. Please re-program via debugger.\n");
-				printf("========================================\n");
-			#endif
-
-			for( ; ; )    // 死循环兜底.
-			{
-				#if (USE_IWDG)
-				HAL_Delay(5);   
-				#endif // USE_IWDG
-			}   
+			BL_Log( "[WARN] DFU APP INVALID (RESET VECTOR). FALL BACK.\n", 1 );
+			return false;
 		}
 
 		/* Platform pre-jump hook: shut down SysTick, clear pending
@@ -301,17 +227,21 @@ Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len )
 		}
 
 		__disable_irq();
-		SCB->VTOR = RECOVERY_APP_START_ADDR;
+		SCB->VTOR = DFU_APP_START_ADDR;
 		__DSB();
-		__set_MSP(recovery_msp);
+		__set_MSP(dfu_msp);
 
-		void (*reset_entry)(void) = (void (*)(void))recovery_reset_vector;
+		void (*reset_entry)(void) = (void (*)(void))dfu_reset_vector;
 		reset_entry();
 
-		for( ; ; );   // 程序不应该执行到这里.
+		/* The program should never reach here. */
+		BL_ASSERT( 0 );
+
+		/* Never reached; satisfies the bool return type. */
+		return true;  
 	}
 
-  #endif // USE_RECOVERY_APP
+  #endif // USE_DFU_APP
 /* ******************************************************************************************** */
 
 
@@ -417,6 +347,18 @@ __weak void Cus_BootloaderHook_GenericError( BL_State_t state, uint32_t error_co
 	#if (USE_UTILS_DEBUG)
 		printf("Cus_BootloaderHook_GenericError Trigged!\n\n");
 		printf("[BOOT] Generic Error! State:%d, Code:0x%02X. System will reset in 3s...\n", state, error_code);
+	#endif  
+}
+
+
+__weak void Cus_BootloaderHook_DFUEnterFailed( BL_State_t state, uint32_t errcode )
+{
+	(void)(state);
+	(void)(errcode);
+
+	#if (USE_UTILS_DEBUG)
+		printf("Cus_BootloaderHook_DFUEnterFailed Trigged!\n\n");
+		printf("[BOOT] DFU APP Unavailable! State:%d, Code:0x%02X. System halted.\n", state, errcode);
 	#endif  
 }
 /* ****************************** Hook Default ******************************************* */

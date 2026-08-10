@@ -8,36 +8,33 @@
 static void stm32f1_Init( void );
 static void stm32f1_PrepareJump( void );
 static void Cus_Bootloader_Utils_SystemClockConfig( void );
+static void err_handle( void );
+/* ************************************ */
+
+#if (USE_DFU_APP)
+	/* User-defined DFU trigger pin (adjust to your hardware). */
+	#define DFU_TRIG_GPIO_Port		GPIOA
+	#define DFU_TRIG_Pin			GPIO_PIN_0
+	static bool stm32f1_CheckDFU( void );
+#endif /* USE_DFU_APP */
 
 #if (USE_DG)
-	static void Cus_Bootloader_FeedIWDG( void );
+	static void stm32f1_FeedIWDG( void );
 #endif /* USE_DG */
 /* ************************************ */
 
-
+/* Central platform error handler: fatal HAL failure (clock / UART
+init cannot recover). Halts forever; place a breakpoint here while
+debugging. If USE_DG is enabled and a watchdog reset is unwanted,
+feed the dog inside the loop. */
 static void 
-stm32f1_Init( void )
+err_handle( void )
 {
-    HAL_Init();
-    Cus_Bootloader_Utils_SystemClockConfig();
-
-	#if (USE_DEBUG)
-		Cus_Bootloader_Utils_Debug_UART_Init();
-	#endif /* USE_DEBUG */
+	for( ; ; )
+	{
+		/* Halt. */
+	}
 }
-
-
-/* Shut down the kernel / HAL environment before jumping to the next image. */
-static void 
-stm32f1_PrepareJump( void )
-{
-    SysTick->CTRL = 0;                    /* Disable SysTick. */
-    SysTick->LOAD = 0;                    /* Clear the reload value. */
-    SysTick->VAL  = 0;                    /* Clear the current value. */
-    SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;  /* Clear any pending SysTick interrupt. */
-    HAL_DeInit();                         /* De-initialize all HAL peripherals. */
-}
-
 
 #if (USE_DEBUG)
 	/* ---------------------------------- */
@@ -85,7 +82,7 @@ stm32f1_PrepareJump( void )
 		(void)f;
 		if ( HAL_UART_Transmit(&huart_debug, (uint8_t*)&ch, 1, 500) != HAL_OK )
 		{
-			/* Error Handler. */
+			err_handle();
 		}
 
 		return ch;
@@ -115,11 +112,48 @@ stm32f1_PrepareJump( void )
 
 		if ( HAL_UART_Init(&huart_debug) != HAL_OK )
 		{
-			for( ; ; );
+			err_handle();
 		}
 	}
 
 #endif /* USE_DEBUG */
+
+
+static void 
+stm32f1_Init( void )
+{
+    HAL_Init();
+    Cus_Bootloader_Utils_SystemClockConfig();
+
+	#if (USE_DEBUG)
+		Cus_Bootloader_Utils_Debug_UART_Init();
+	#endif /* USE_DEBUG */
+}
+
+
+/* Shut down the kernel / HAL environment before jumping to the next image. */
+static void 
+stm32f1_PrepareJump( void )
+{
+    SysTick->CTRL = 0;                    /* Disable SysTick. */
+    SysTick->LOAD = 0;                    /* Clear the reload value. */
+    SysTick->VAL  = 0;                    /* Clear the current value. */
+    SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk;  /* Clear any pending SysTick interrupt. */
+    HAL_DeInit();                         /* De-initialize all HAL peripherals. */
+}
+
+
+#if (USE_DFU_APP)
+/* DFU trigger example: return true to jump into the DFU APP.
+   The trigger source is entirely user-defined (GPIO level, external
+   signal, communication state, ...). Example below: PA0 pulled low by
+   a jumper / button / host controller. */
+static bool 
+stm32f1_CheckDFU( void )
+{
+    return ( HAL_GPIO_ReadPin( DFU_TRIG_GPIO_Port, DFU_TRIG_Pin ) == GPIO_PIN_RESET );
+}
+#endif /* USE_DFU_APP */
 
 
 #if (USE_DG)
@@ -147,7 +181,7 @@ Cus_Bootloader_Utils_SystemClockConfig( void )
 
 	if ( HAL_RCC_OscConfig(&OscInitStructure) != HAL_OK )
 	{
-		/* TODO. */
+		err_handle();
 	}
 
 	ClkInitStructure.ClockType = RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK;
@@ -158,7 +192,7 @@ Cus_Bootloader_Utils_SystemClockConfig( void )
 
 	if ( HAL_RCC_ClockConfig(&ClkInitStructure, FLASH_LATENCY_2) != HAL_OK )
 	{
-		/* TODO. */
+		err_handle();
 	}
 }
 
@@ -173,10 +207,12 @@ BootPlatform_stm32f1_Install( void )
     Ops.Init 	= stm32f1_Init;
     Ops.PrepareJump = stm32f1_PrepareJump;
 
+	#if (USE_DFU_APP)
+		Ops.CheckDFU = stm32f1_CheckDFU;
+	#endif /* USE_DFU_APP */
+
 	#if (USE_DG)
 		Ops.FeedDg = stm32f1_FeedIWDG;
-	#else 
-		Ops.FeedDg = NULL;
 	#endif /* USE_DG */
 
     BootPlatform_Register(&Ops);

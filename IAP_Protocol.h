@@ -1,3 +1,10 @@
+/*
+ * IAP_Protocol.h -- SHARED CONTRACT between the Bootloader project and
+ * the APP project (and the DFU APP, if enabled). Everything here is
+ * visible to both sides: memory layout, update request format, A/B
+ * slot records and checksums. Bootloader-private configuration lives
+ * in BootloaderConf.h instead.
+ */
 #ifndef __CUS_IAP_PROTOCAL_H__
 #define __CUS_IAP_PROTOCAL_H__
 
@@ -67,11 +74,7 @@ typedef struct
 #define DOWNLOAD_START_ADDRESS            (0x08044000UL)
 #define DOWNLOAD_REGION_SIZE              (0x00032000UL)    // 200KB
 
-#define MCU_SRAM_BASE_ADDR                (SRAM_BASE) 
-#define MCU_SRAM_SIZE                     (64 * 1024)
-
 #define IAP_MAGIC_WORD                    (0xAA55UL)  
-#define BYTES_PER_PACKS                   (1024UL)
 
 
 /* -------------- A/B Dual-Slot OTA (Optional) -------------- */
@@ -115,6 +118,26 @@ typedef struct
 #define SLOT_FLAG_MAGIC_B                 (0x55AA55AAUL)
 
 
+/*
+ * NOTE: the slot-flag RECORDS (read/write) are NOT provided by this
+ * protocol header. Each side maintains them through its own storage
+ * backend:
+ *   - Bootloader: the registered BootFlash ReadSlot / FlipSlot ops.
+ *   - APP / DFU:  an equivalent implementation over the same region
+ *                 (same desc, same SlotFlag_Rec_t layout).
+ * ReadSlot must return the LATEST record (highest seq). The APP uses
+ * its read path + BootSlot_MagicToAddr() to compute the firmware
+ * write target (always the INACTIVE slot).
+ */
+
+/* Convert a slot-flag magic value to its partition start address.
+   Unknown values fall back to slot A (same default as the core). */
+static inline uint32_t BootSlot_MagicToAddr( uint32_t magic )
+{
+    return ( magic == SLOT_FLAG_MAGIC_B ) ? APP_SLOT_B_START : APP_SLOT_A_START;
+}
+
+
 static inline uint32_t 
 SlotFlag_RecCrc( const SlotFlag_Rec_t *rec )
 {
@@ -124,4 +147,3 @@ SlotFlag_RecCrc( const SlotFlag_Rec_t *rec )
 }
 
 #endif /* __CUS_IAP_PROTOCAL_H__ */
-

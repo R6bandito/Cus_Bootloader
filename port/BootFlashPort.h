@@ -106,8 +106,9 @@ typedef struct {
 
 	#if (USE_AB_SLOT)
 		/* Read the latest valid slot-flag record (backend lookup +
-			magic/CRC validation inside). NULL-safe: the core falls back
-			to "slot A active" when this is NULL or returns false. */
+			magic/CRC validation inside). MANDATORY in A/B mode: called
+			unconditionally by the core (asserted at startup). Returns
+			false when no valid record exists (caller defaults to A). */
 		BootFlash_ReadSlotFn  ReadSlot;
 
 		/* Persist one slot-flag record (see IAP_Protocol.h SlotFlag_Rec_t).
@@ -115,7 +116,8 @@ typedef struct {
 			seq / crc are already finalized. The implementation only decides
 			HOW to store it: erase-page-then-write, or append into the log
 			area with wear leveling. Store the record verbatim; do not modify
-			it. @return true only when the record is durable. */
+			it. MANDATORY in A/B mode (asserted at startup).
+			@return true only when the record is durable. */
 		BootFlash_FlipSlotFn  FlipSlot;
 	#endif
 
@@ -127,3 +129,4 @@ extern const BootFlash_Ops_t *g_BootFlash;
 void BootFlash_Register( const BootFlash_Ops_t *ops );
 
 #endif
+
