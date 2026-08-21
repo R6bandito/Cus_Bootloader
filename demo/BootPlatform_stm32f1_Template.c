@@ -9,6 +9,10 @@ static void stm32f1_Init( void );
 static void stm32f1_PrepareJump( void );
 static void Cus_Bootloader_Utils_SystemClockConfig( void );
 static void err_handle( void );
+
+#if (USE_DEBUG)
+	static void stm32f1_LogOut( const char *msg, uint32_t err_code );
+#endif /* USE_DEBUG */
 /* ************************************ */
 
 #if (USE_DFU_APP)
@@ -116,6 +120,15 @@ err_handle( void )
 		}
 	}
 
+	/* Bootloader log output: BL_Log routes here. printf is already
+	   redirected to the debug UART (fputc). */
+	static void 
+	stm32f1_LogOut( const char *msg, uint32_t err_code )
+	{
+		(void)err_code;
+		printf( "%s", msg );
+	}
+
 #endif /* USE_DEBUG */
 
 
@@ -206,6 +219,11 @@ BootPlatform_stm32f1_Install( void )
     BootPlatform_Ops_t Ops = { 0 };
     Ops.Init 	= stm32f1_Init;
     Ops.PrepareJump = stm32f1_PrepareJump;
+	Ops.DelayMs = HAL_Delay;
+
+	#if (USE_DEBUG)
+		Ops.LogOut = stm32f1_LogOut;
+	#endif /* USE_DEBUG */
 
 	#if (USE_DFU_APP)
 		Ops.CheckDFU = stm32f1_CheckDFU;

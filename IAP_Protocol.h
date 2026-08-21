@@ -42,17 +42,13 @@ typedef struct
  * Actual layout (values below):
  *
  *   [0x08000000] Bootloader          64KB   must match the linker script
- *   [0x08010000] APP Slot A         200KB   active slot by default
- *   [0x08042000] IAP Manager          8KB   Cus_FlashMgr: IAP_Info_t request records
- *   [0x08044000] APP Slot B         200KB   inactive slot (legacy DOWNLOAD region)
- *   [0x08076000] free                2KB
- *   [0x08076800] Slot Flag            2KB   active-slot marker page (A/B section)
- *   [0x08077000] free                4KB
- *   [0x08078000] Resume Manager       8KB   Cus_FlashMgr: power-fail resume records
- *   [0x0807A000] free               24KB
+ *   [0x08010000] APP Slot A         216KB   active slot by default (108 pages)
+ *   [0x08046000] APP Slot B         216KB   inactive slot (108 pages)
+ *   [0x0807C000] IAP Manager          8KB   Cus_FlashMgr: IAP_Info_t request records
+ *   [0x0807E000] Slot Flag            8KB   Cus_FlashMgr: SlotFlag_Rec_t records
  *   [0x08080000] flash end (512KB)
  *
- * Used: 64+200+8+200+2+2+4+8 = 488KB, leaving 24KB free.
+ * Used: 64+216+216+8+8 = 512KB (full flash utilization).
  *
  * Notes:
  * 1. Slot A / Slot B form the A/B dual-slot pair (see the A/B section
@@ -60,7 +56,8 @@ typedef struct
  *    slot always stays intact.
  * 2. IAP Manager holds the update request (IAP_Info_t: magic / size /
  *    CRC32), written by the APP, read by the Bootloader.
- * 3. Resume Manager holds the power-fail resume record (BootResume).
+ * 3. Slot-flag records live in the SLOT Manager area (SlotFlag_Rec_t,
+ *    managed via ReadSlot / FlipSlot on the Bootloader side).
  * 4. IAP_MAGIC_WORD: known pattern at the head of IAP_Info_t; marks a
  *    valid update request.
  */
@@ -69,10 +66,7 @@ typedef struct
 #define BOOTLOADER_SIZE                   (0x00010000UL)    // 64KB
 
 #define APP_START_ADDRESS                 (0x08010000UL)
-#define APP_REGION_SIZE                   (0x00032000UL)    // 200KB
-
-#define DOWNLOAD_START_ADDRESS            (0x08044000UL)
-#define DOWNLOAD_REGION_SIZE              (0x00032000UL)    // 200KB
+#define APP_REGION_SIZE                   (0x00036000UL)    // 216KB
 
 #define IAP_MAGIC_WORD                    (0xAA55UL)  
 
@@ -99,18 +93,15 @@ typedef struct
  *   - SLOT_FLAG_MAGIC_B  -> slot B active
  *   - any other value (e.g. erased 0xFFFFFFFF) -> defaults to slot A
  *
- * NOTE: APP_SLOT_B currently maps to the legacy DOWNLOAD region; the
- * DOWNLOAD_* macros above are kept for backward compatibility.
- *
  * Adjust these addresses/sizes for your target MCU (e.g. C8T6 layout
  * differs from ZET6); the flag page must be page-aligned and must not
  * share a flash page with any other region.
  */
 #define APP_SLOT_A_START                  (0x08010000UL)
-#define APP_SLOT_A_SIZE                   (0x00032000UL)    // 200KB
+#define APP_SLOT_A_SIZE                   (0x00036000UL)    // 216KB
 
-#define APP_SLOT_B_START                  (0x08044000UL)
-#define APP_SLOT_B_SIZE                   (0x00032000UL)    // 200KB
+#define APP_SLOT_B_START                  (0x08046000UL)
+#define APP_SLOT_B_SIZE                   (0x00036000UL)    // 216KB
 
 /* Slot-flag record markers (active field values). */
 #define SLOT_REC_MAGIC                    (0x534C4F54UL)              /* "SLOT" */
@@ -118,9 +109,17 @@ typedef struct
 #define SLOT_FLAG_MAGIC_B                 (0x55AA55AAUL)
 
 
+/* KV manager regions (shared by the Bootloader backend and the APP-side
+   storage code; both sides MUST use these identical addresses). */
+#define IAP_MGR_START_ADDR                (0x0807C000UL)
+#define IAP_MGR_END_ADDR                  (0x0807E000UL)
+#define SLOT_MGR_START_ADDR               (0x0807E000UL)
+#define SLOT_MGR_END_ADDR                 (0x08080000UL)
+
+
 /*
  * NOTE: the slot-flag RECORDS (read/write) are NOT provided by this
- * protocol header. Each side maintains them through its own storage
+ * protocol header. Each side maintains them through their own storage
  * backend:
  *   - Bootloader: the registered BootFlash ReadSlot / FlipSlot ops.
  *   - APP / DFU:  an equivalent implementation over the same region

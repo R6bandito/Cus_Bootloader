@@ -9,17 +9,9 @@
 #include "IAP_Protocol.h"
 
 
-#if (USE_POWER_FAIL_RESUME)
-	#include "BootResume.h"
-#endif /* USE_POWER_FAIL_RESUME */
-
-
 typedef enum 
 {
 	BL_STATE_START = 0,
-	BL_STATE_ERASE_APP,
-	BL_STATE_WRITE_FW,
-	BL_STATE_VERIFY_FW,
 	BL_STATE_VERIFY_AB,
 	BL_STATE_CLEAR_IAP_FLAG,
 	BL_STATE_JUMP_APP,

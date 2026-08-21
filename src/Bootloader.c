@@ -10,7 +10,6 @@
  *
  *   #include "BootPlatform_stm32f1_Template.h"   // platform: clock / UART / watchdog
  *   #include "BootFlashPort_Template_kv.h"        // flash backend: erase / write / IAP request
- *   #include "BootResume_Template_kv.h"           // power-fail resume (optional, if USE_POWER_FAIL_RESUME)
  *
  * Then call the Install functions inside
  * Cus_Bootloader_InstallFunctions() below.
@@ -22,18 +21,12 @@
 
 volatile BL_State_t g_bootloaderState;
 
-#if (USE_POWER_FAIL_RESUME)
-	BootResume_Data_t LoadConf;
-#endif // USE_POWER_FAIL_RESUME
-
 /* ---------------------------------------------- */
 
 
 /* ---------------------------------------------- */
 uint8_t Cus_Bootloader_CheckIAPRequest( void );
 void Cus_Bootloader_Init( void );
-
-static uint8_t Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC );
 uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len );
 /* ---------------------------------------------- */
 
@@ -48,7 +41,6 @@ uint32_t Cus_Bootloader_CRC32Caculate( uint8_t *pData, uint32_t data_len );
  * The user MUST put ALL environment initializations inside this function:
  *   - Device / platform environment (clock, UART debug, watchdog, delay, ...)
  *   - Flash operation backend       (BootFlashPort: erase / write / read IAP request)
- *   - Optional power-fail resume backend (BootResume, if enabled)
  *
  * This function is invoked by Cus_Bootloader_Init() at the very beginning
  * of the startup sequence, BEFORE any Bootloader service is used.
@@ -66,7 +58,6 @@ Cus_Bootloader_InstallFunctions( void )
         *
         *   BootPlatform_stm32f1_Install();   // platform: clock / UART / watchdog
         *   BootFlashPort_kv_Install();       // flash backend: erase / write / IAP request
-        *   BootResume_kv_Install();          // power-fail resume (optional)
         */
 }
 
@@ -79,18 +70,11 @@ Cus_Bootloader_Init( void )
 
 	/* Mandatory ports: the core calls these unconditionally. */
 	BL_ASSERT( g_Platform->DelayMs && g_Platform->Init );
-	BL_ASSERT( g_BootFlash->ReadIAP && g_BootFlash->Verify && g_BootFlash->Write
-					 && g_BootFlash->Erase && g_BootFlash->ClearIAP );
+	BL_ASSERT( g_BootFlash->ReadIAP && g_BootFlash->ClearIAP );
 
-	#if (USE_AB_SLOT)
-		/* A/B mode: the slot-flag backend is called unconditionally
-		   (startup slot resolution / VERIFY_AB) -- must be registered. */
-		BL_ASSERT( g_BootFlash->ReadSlot && g_BootFlash->FlipSlot );
-	#endif /* USE_AB_SLOT */
-
-	#if (USE_POWER_FAIL_RESUME)
-		BL_ASSERT( g_BootResume->Load && g_BootResume->Clear && g_BootResume->Save );
-	#endif /* USE_POWER_FAIL_RESUME */
+	/* A/B: the slot-flag backend is called unconditionally
+	   (startup slot resolution / VERIFY_AB) -- must be registered. */
+	BL_ASSERT( g_BootFlash->ReadSlot && g_BootFlash->FlipSlot );
 
 	/* Initialize the Bootloader runtime environment using the user-registered callbacks. */
 	g_Platform->Init();
@@ -123,51 +107,17 @@ Cus_Bootloader_CheckIAPRequest( void )
 		return 0;     
 	}
 
-	if ( iap_info->app_size > APP_REGION_SIZE || iap_info->app_size > DOWNLOAD_REGION_SIZE 
-			|| iap_info->app_size == 0 )  
+	if ( iap_info->app_size > APP_REGION_SIZE || iap_info->app_size == 0 )  
 	{
-		BL_LogF( 0, "[WARN] FIRMWARE SIZE %u INVALID (APP %u / DL %u).\n",
-				 iap_info->app_size, APP_REGION_SIZE, DOWNLOAD_REGION_SIZE );
+		BL_LogF( 0, "[WARN] FIRMWARE SIZE %u INVALID (APP %u).\n",
+				 iap_info->app_size, APP_REGION_SIZE );
 		return 0;
 	}
 
-	#if (!USE_AB_SLOT)
-	uint8_t CRC_CheckReturn = Cus_Bootloader_CRC32Verify( iap_info->CRC32 );
-	if ( !CRC_CheckReturn )   
-	{
-		/* CRC Verify Failed! Fireware not reliable.Discard this update required. */ 
-		BL_Log( "[WARN] DETECT FIRMWARE BUT CRC VERIFY ERROR. SKIP.\n", 1 );
-		int hReturn = g_BootFlash->ClearIAP();
-		if ( hReturn < 0 )
-			BL_Log( "[ERROR] IAP REQUEST CLEAR FAILED.\n", 1 );
-
-		return 0;
-	}
-	#endif /* !USE_AB_SLOT */
-
-	/* CRC Verify Success. */ 
+	/* A/B: the request CRC is verified against the TARGET slot in
+	   BL_STATE_VERIFY_AB; nothing to check here. */
 	BL_Log( "[INFO] IAP REQUEST GET. READY TO LOAD.\n", 0 );
 	return 1;
-}
-
-
-static uint8_t 
-Cus_Bootloader_CRC32Verify( uint32_t exptected_CRC )
-{
-	uint8_t buf[sizeof(IAP_Info_t)] = { 0 };
-	bool isRead = g_BootFlash->ReadIAP(buf, sizeof(buf));
-	if ( !isRead )
-	{
-		return 0;
-	}
-
-	IAP_Info_t *iap_info = (IAP_Info_t *)buf;
-
-	uint32_t CalculateCRC = Cus_Bootloader_CRC32Caculate((uint8_t *)DOWNLOAD_START_ADDRESS, iap_info->app_size);
-
-	if ( CalculateCRC != exptected_CRC )  return 0;   // CRC Verify Failed!
-
-	return 1;   
 }
 
 

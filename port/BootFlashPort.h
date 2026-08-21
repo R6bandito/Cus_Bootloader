@@ -11,8 +11,14 @@
  * Responsibilities:
  *   - Initialize the storage backend (latency calibration, KV manager
  *     bring-up, ...).
- *   - Erase / write / verify the APP download region.
  *   - Persist, read back and clear the IAP update request record.
+ *   - Maintain the A/B slot-flag records (read latest / flip).
+ *
+ * NOTE: firmware erase / write is NOT part of this interface -- in the
+ * A/B flow the firmware is written by the user side (APP / DFU APP),
+ * the Bootloader core only verifies the target slot and flips the flag.
+ * DFU-side Flash writes are implemented by the user in the DFU APP
+ * (directly on Cus_Flash), independent of this core interface.
  *
  * A concrete backend is supplied by a template implementation, e.g.
  * BootFlashPort_Template_kv.c (Cus_Flash based). It must be registered
@@ -27,16 +33,10 @@
 #include "IAP_Protocol.h"
 
 typedef int  (*BootFlash_InitFn)  ( void );
-typedef int  (*BootFlash_EraseFn) ( uint32_t addr, uint32_t size );
-typedef int  (*BootFlash_WriteFn) ( uint32_t addr, const uint8_t *data, uint32_t size );
 typedef bool (*BootFlash_ReadFn)  ( uint8_t *buf, uint32_t size );
 typedef bool (*BootFlash_ClearIAPFn)( void );  
-typedef bool (*BootFlash_VerifyFn)( uint32_t addr, const uint8_t *data, uint32_t size );
-
-#if (USE_AB_SLOT)
-	typedef bool (*BootFlash_ReadSlotFn)( SlotFlag_Rec_t *out );
-	typedef bool (*BootFlash_FlipSlotFn)( const SlotFlag_Rec_t *rec );
-#endif
+typedef bool (*BootFlash_ReadSlotFn)( SlotFlag_Rec_t *out );
+typedef bool (*BootFlash_FlipSlotFn)( const SlotFlag_Rec_t *rec );
 
 
 /*
@@ -60,25 +60,6 @@ typedef struct {
 
     /**
      * REQUIRED: must be implemented and non-NULL.
-     * Erase the region [addr, addr + size).
-     * Implementation shall round the range up to the next page/sector
-     * boundary so that partially covered pages are fully erased. Used by
-     * the core to wipe the APP region before writing new firmware.
-     * @return 0 on success, negative error code on failure.
-     */
-    BootFlash_EraseFn  Erase;
-
-    /**
-     * REQUIRED: must be implemented and non-NULL.
-     * Write @c size bytes from @c data to @c addr.
-     * Implementation must validate inputs (NULL data, zero size) and
-     * handle alignment internally. Used to write firmware in packets.
-     * @return 0 on success, negative error code on failure.
-     */
-    BootFlash_WriteFn  Write;
-
-    /**
-     * REQUIRED: must be implemented and non-NULL.
      * Read the latest IAP update request record into @c buf.
      * The record layout is IAP_Info_t (magic / app_size / CRC32). Used by
      * the core to detect a pending update and to verify its CRC.
@@ -95,31 +76,20 @@ typedef struct {
      */
     BootFlash_ClearIAPFn  ClearIAP;
 
-    /**
-     * REQUIRED: must be implemented and non-NULL.
-     * Byte-by-byte compare the Flash region [addr, addr + size) against
-     * @c data. Used by the core to verify the written firmware before
-     * jumping to the APP.
-     * @return true if the region exactly matches @c data.
-     */
-    BootFlash_VerifyFn Verify;
+	/* Read the latest valid slot-flag record (backend lookup +
+		magic/CRC validation inside). MANDATORY: called unconditionally
+		by the core (asserted at startup). Returns false when no valid
+		record exists (caller defaults to A). */
+	BootFlash_ReadSlotFn  ReadSlot;
 
-	#if (USE_AB_SLOT)
-		/* Read the latest valid slot-flag record (backend lookup +
-			magic/CRC validation inside). MANDATORY in A/B mode: called
-			unconditionally by the core (asserted at startup). Returns
-			false when no valid record exists (caller defaults to A). */
-		BootFlash_ReadSlotFn  ReadSlot;
-
-		/* Persist one slot-flag record (see IAP_Protocol.h SlotFlag_Rec_t).
-			The caller (Bootloader core) builds the record: magic / active /
-			seq / crc are already finalized. The implementation only decides
-			HOW to store it: erase-page-then-write, or append into the log
-			area with wear leveling. Store the record verbatim; do not modify
-			it. MANDATORY in A/B mode (asserted at startup).
-			@return true only when the record is durable. */
-		BootFlash_FlipSlotFn  FlipSlot;
-	#endif
+	/* Persist one slot-flag record (see IAP_Protocol.h SlotFlag_Rec_t).
+		The caller (Bootloader core) builds the record: magic / active /
+		seq / crc are already finalized. The implementation only decides
+		HOW to store it: erase-page-then-write, or append into the log
+		area with wear leveling. Store the record verbatim; do not modify
+		it. MANDATORY (asserted at startup).
+		@return true only when the record is durable. */
+	BootFlash_FlipSlotFn  FlipSlot;
 
 } BootFlash_Ops_t;
 

@@ -5,37 +5,21 @@
 
 /* ************************************************** */
 int flashInit( void );
-static int flashErase( uint32_t addr, uint32_t size );
-static int flashWrite( uint32_t addr, const uint8_t *data, uint32_t size );
 static bool flashReadIAP( uint8_t *buf, uint32_t size );
-static bool flashVerify( uint32_t addr, const uint8_t *data, uint32_t size );
 static bool flashClearIAP( void );
 
-#if (USE_AB_SLOT)
-	static bool flashReadSlot( SlotFlag_Rec_t *out );
-	static bool flashFlipSlot( const SlotFlag_Rec_t *rec );
-#endif /* USE_AB_SLOT */
+static bool flashReadSlot( SlotFlag_Rec_t *out );
+static bool flashFlipSlot( const SlotFlag_Rec_t *rec );
 
 bool writeIAP( IAP_Info_t iapReq );
 void bootloader_InstallCallbacks( void );
 
 static FlashMgr_Instance_t gs_Mgr_IAP;
-
-#if (USE_AB_SLOT)
-	static FlashMgr_Instance_t gs_Mgr_Slot;
-#endif /* USE_AB_SLOT */
+static FlashMgr_Instance_t gs_Mgr_Slot;
 /* ************************************************** */
 
-/* ************************************************** */
-#define 	MANAGER_START_ADDR				(0x08042000UL)
-#define 	MANAGER_END_ADDR				(0x08044000UL)
-
-#if (USE_AB_SLOT)
-#define 	SLOT_MGR_START_ADDR				(0x08077000UL)
-#define 	SLOT_MGR_END_ADDR				(0x08078000UL)
-#endif /* USE_AB_SLOT */
-/* ************************************************** */
-
+/* KV manager regions: shared with the APP via IAP_Protocol.h
+   (IAP_MGR_* / SLOT_MGR_*). Do NOT redefine them here. */
 
 static void err_handle( Cus_Flash_State_t Ret )
 {
@@ -49,86 +33,24 @@ flashInit( void )
 {
 	Cus_Flash_CalibrateLatency();
 
-	Cus_Flash_State_t hReturn = Cus_FlashMgr_Init( &gs_Mgr_IAP, MANAGER_START_ADDR, MANAGER_END_ADDR );
+	Cus_Flash_State_t hReturn = Cus_FlashMgr_Init( &gs_Mgr_IAP, IAP_MGR_START_ADDR, IAP_MGR_END_ADDR );
 	if ( hReturn != CUS_FLASH_OK )
 	{
 		err_handle( hReturn );
 		return -1;
 	}
 
-	#if (USE_AB_SLOT)
-		hReturn = Cus_FlashMgr_Init( &gs_Mgr_Slot, SLOT_MGR_START_ADDR, SLOT_MGR_END_ADDR );
-		if ( hReturn != CUS_FLASH_OK )
-		{
-			err_handle( hReturn );
-			return -1;
-		}
-	#endif /* USE_AB_SLOT */
+	hReturn = Cus_FlashMgr_Init( &gs_Mgr_Slot, SLOT_MGR_START_ADDR, SLOT_MGR_END_ADDR );
+	if ( hReturn != CUS_FLASH_OK )
+	{
+		err_handle( hReturn );
+		return -1;
+	}
 
 	/* This implementation assumes the default DWT timer. */
 	/* If you have overridden the timebase API externally, you may comment out this line. */
 	/* Leaving it uncommented is also safe; DWT will be used without any side effects. */
 	Cus_Flash_SYS_TickInit();
-
-	return 0;
-}
-
-
-
-static int 
-flashErase( uint32_t addr, uint32_t size )
-{
-	#if (DEVICE_STM32F1xx)
-		uint32_t waitErasedPageCounts = (size / CUS_FLASH_BYTE_PER_PAGE);
-		uint32_t remaining = (size % CUS_FLASH_BYTE_PER_PAGE);
-
-		if ( remaining > 0 )
-			waitErasedPageCounts++;
-	
-		uint32_t pageAddr = Cus_Flash_GetPageStart(addr);
-		int16_t hReturn = Cus_Flash_ErasePages(pageAddr, waitErasedPageCounts);
-		if ( (hReturn < 0) || (hReturn != waitErasedPageCounts) )
-			return -1;
-	#endif /* DEVICE_STM32F1xx */
-
-    #if (DEVICE_STM32F4xx)
-        const Cus_Flash_Sector_t *pSector = Cus_Flash_GetSectorbyAddr(addr);
-        if (!pSector)
-            return -1;
-    
-        uint32_t current = addr;
-        uint32_t end = addr + size;
-    
-        while (current < end)
-        {
-            pSector = Cus_Flash_GetSectorbyAddr(current);
-            if (!pSector) break;
-    
-            Cus_Flash_State_t ret = Cus_Flash_EraseSector(pSector);
-            if (ret != CUS_FLASH_OK)
-                return -1;
-    
-            current = pSector->secStartAddr + pSector->secSize;
-        }
-    #endif
-
-	return 0;
-}
-
-
-
-static int 
-flashWrite( uint32_t addr, const uint8_t *data, uint32_t size )
-{
-	if ( !data || (size == 0) )
-		return -1;
-
-	Cus_Flash_State_t hReturn = Cus_Flash_WriteBuffer(addr, data, size);
-	if ( hReturn != CUS_FLASH_OK )
-	{
-		err_handle(hReturn);
-		return -2;
-	}
 
 	return 0;
 }
@@ -153,24 +75,6 @@ flashReadIAP( uint8_t *buf, uint32_t size )
     /* Get the IAP Record. */
 	IAP_Info_t *iapR = (IAP_Info_t *)Out.dataStartAddr;
 	memcpy(buf, (uint8_t *)iapR, size);
-
-	return true;
-}
-
-
-
-static bool 
-flashVerify( uint32_t addr, const uint8_t *data, uint32_t size )
-{
-	if ( !data || size == 0 )
-		return false;
-
-	bool isVerified = Cus_Flash_VerifyBuffer(addr, data, size);
-	if ( !isVerified )
-	{
-		/* Dismatch detected. Return F. */
-		return false;
-	}
 
 	return true;
 }
@@ -228,8 +132,6 @@ writeIAP( IAP_Info_t iapReq )
 	return false;
 }
 
-
-#if (USE_AB_SLOT)
 
 	/* Compact keep-callback: keep only the SLOT record whose seq
 	   matches the value passed via @c ctx (the previous newest). */
@@ -298,24 +200,17 @@ writeIAP( IAP_Info_t iapReq )
 		return ( Cus_FlashMgr_Append( &gs_Mgr_Slot, &req ) == CUS_FLASH_OK );
 	}
 
-#endif /* USE_AB_SLOT */
-
 
 void 
 bootloader_InstallCallbacks( void )
 {
 	BootFlash_Ops_t Ops = { 0 };
 	Ops.ClearIAP 	= flashClearIAP;
-	Ops.Erase 		= flashErase;
 	Ops.Init 		= flashInit;
 	Ops.ReadIAP 	= flashReadIAP;
-	Ops.Verify 		= flashVerify;
-	Ops.Write 		= flashWrite;
 
-	#if (USE_AB_SLOT)
-		Ops.ReadSlot = flashReadSlot;
-		Ops.FlipSlot = flashFlipSlot;
-	#endif 
+	Ops.ReadSlot = flashReadSlot;
+	Ops.FlipSlot = flashFlipSlot;
 
 	BootFlash_Register(&Ops);
 }
